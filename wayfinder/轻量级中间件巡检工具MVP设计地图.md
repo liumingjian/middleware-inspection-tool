@@ -2,7 +2,8 @@
 type: wayfinder-map
 label: wayfinder:map
 status: open
-tracker: local-markdown
+tracker: github
+canonical: https://github.com/liumingjian/middleware-inspection-tool/issues/1
 ---
 
 # 轻量级中间件巡检工具 MVP 设计地图

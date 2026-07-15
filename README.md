@@ -53,16 +53,16 @@
 
 ## 当前状态
 
-当前仓库保存 Wayfinder 设计地图，尚未进入产品实现：
+当前项目仍处于设计阶段。GitHub Issues 是 Wayfinder 规划的 canonical tracker：
 
-- [MVP 设计地图](wayfinder/轻量级中间件巡检工具MVP设计地图.md)
+- [MVP 设计地图](https://github.com/liumingjian/middleware-inspection-tool/issues/1)
 - [领域词汇](CONTEXT.md)
-- [设计票据](wayfinder/tickets/)
+- [本地规划快照](wayfinder/)
 
-首批需要解决的两个前沿问题是：
+当前 frontier 包含两个可独立推进的问题：
 
-1. 定义 Tomcat MVP 的巡检范围与权限降级能力；
-2. 原型验证脚本管理与报告生成的 Web 交互。
+1. [定义 Tomcat MVP 的巡检范围与降级能力](https://github.com/liumingjian/middleware-inspection-tool/issues/2)；
+2. [原型验证脚本管理与报告生成交互](https://github.com/liumingjian/middleware-inspection-tool/issues/7)。
 
 Nginx、RabbitMQ、RocketMQ 和 Elasticsearch 将在 Tomcat MVP 验证通用内核后逐个接入。
 
