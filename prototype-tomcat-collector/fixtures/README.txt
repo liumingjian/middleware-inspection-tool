@@ -1,0 +1,1 @@
+Minimal fixture directory placeholder. `run.sh` generates deterministic fake proc/config trees under ../.tmp-run.

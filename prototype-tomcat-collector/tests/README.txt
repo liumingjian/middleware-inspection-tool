@@ -1,0 +1,1 @@
+Minimal tests directory placeholder. Assertions live in ../run.sh to keep the prototype one-command and small.
