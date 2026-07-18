@@ -185,18 +185,25 @@ valid_abs_path() {
 }
 
 version_from_release_notes() {
-  local base=$1 line path
+  local base=$1 line path fixture_state
   path=$(safe_config_path "$base" 'RELEASE-NOTES')
+  if [ "$FIXTURE_MODE" -eq 1 ] && [ -r "$path.fixture-state" ]; then
+    fixture_state=$(read_file_text "$path.fixture-state" || true)
+    [ "$fixture_state" != 'unreadable' ] || return 2
+  fi
+  [ -e "$path" ] || return 1
+  [ -r "$path" ] || return 2
   while IFS= read -r line; do
     case "$line" in
       *Apache\ Tomcat\ Version*)
         if [[ $line =~ Apache[[:space:]]+Tomcat[[:space:]]+Version[[:space:]]+([0-9]+\.[0-9]+(\.[0-9]+)?) ]]; then
           printf '%s' "${BASH_REMATCH[1]}"
-          exit 0
+          return 0
         fi
         ;;
     esac
-  done < "$path"
+  done < "$path" 2>/dev/null || return 2
+  return 3
 }
 
 server_xml_state() {
@@ -256,8 +263,21 @@ emit_instance() {
   fi
 
   if [ "$base_status" = 'collected' ]; then
-    version=$(version_from_release_notes "$base" || true)
-    if [ -n "$version" ]; then version_status='collected'; else add_issue 'path_not_found' 'field' "/instances/$((candidate_no - 1))/tomcat/version" 'Tomcat version release notes were not found'; version_issue=$ADDED_ISSUE_ID; version_status='not_collected'; version=''; fi
+    version=$(version_from_release_notes "$base")
+    version_rc=$?
+    if [ "$version_rc" -eq 0 ] && [ -n "$version" ]; then
+      version_status='collected'
+    else
+      case "$version_rc" in
+        1) version_code='path_not_found'; version_message='Tomcat version release notes were not found' ;;
+        2) version_code='config_unreadable'; version_message='Tomcat version release notes could not be read' ;;
+        *) version_code='parse_error'; version_message='Tomcat version token could not be parsed from release notes' ;;
+      esac
+      add_issue "$version_code" 'field' "/instances/$((candidate_no - 1))/tomcat/version" "$version_message"
+      version_issue=$ADDED_ISSUE_ID
+      version_status='not_collected'
+      version=''
+    fi
     sx=$(server_xml_state "$base")
     if [ "$sx" = 'present' ]; then
       sx_status='collected'
@@ -266,7 +286,7 @@ emit_instance() {
       sx_status='not_collected'
     fi
     apps=$(app_count "$base")
-    if [ "$apps" = 'unavailable' ]; then add_issue 'path_not_found' 'field' "/instances/$((candidate_no - 1))/applications/0" 'Tomcat webapps directory was not found'; apps_issue=$ADDED_ISSUE_ID; apps_status='not_collected'; else apps_status='collected'; fi
+    if [ "$apps" = 'unavailable' ]; then add_issue 'path_not_found' 'field' "/instances/$((candidate_no - 1))/applications" 'Tomcat webapps directory was not found'; apps_issue=$ADDED_ISSUE_ID; apps_status='not_collected'; else apps_status='collected'; fi
   else
     version_status='not_collected'; version=''; version_issue=$base_issue
     sx=''; sx_status='not_collected'; sx_issue=$base_issue
@@ -280,22 +300,18 @@ emit_instance() {
   EMITTED_INSTANCE+='{"instance_id":"pid:'; EMITTED_INSTANCE+=$pid
   EMITTED_INSTANCE+='","pid":'; EMITTED_INSTANCE+="$pid"; EMITTED_INSTANCE+="$catalina_base_json"
   EMITTED_INSTANCE+=',"identity":{"pid":'; EMITTED_INSTANCE+="$pid"; EMITTED_INSTANCE+=',"catalina_base":'
-  EMITTED_INSTANCE+=$(fact "$base_status" "$base_value" 'procfs_cmdline' "/proc/$pid/cmdline" "$id_csv")
+  EMITTED_INSTANCE+=$(fact "$base_status" "$base_value" 'procfs' "/proc/$pid/cmdline" "$id_csv")
   EMITTED_INSTANCE+='},"tomcat":{"version":'
-  EMITTED_INSTANCE+=$(fact "$version_status" "$version" 'release_notes' 'RELEASE-NOTES version token' "$version_issue")
+  EMITTED_INSTANCE+=$(fact "$version_status" "$version" 'parsed_config' 'RELEASE-NOTES version token' "$version_issue")
   EMITTED_INSTANCE+=',"server_xml":'
-  EMITTED_INSTANCE+=$(fact "$sx_status" "$sx" 'config_path' 'conf/server.xml' "$sx_issue")
+  EMITTED_INSTANCE+=$(fact "$sx_status" "$sx" 'file_metadata' 'conf/server.xml' "$sx_issue")
   EMITTED_INSTANCE+='},"jvm":{"runtime_args":'
-  EMITTED_INSTANCE+=$(fact 'collected' 'sensitive runtime arguments excluded' 'procfs_cmdline' "/proc/$pid/cmdline" '')
+  EMITTED_INSTANCE+=$(fact 'collected' 'sensitive runtime arguments excluded' 'procfs' "/proc/$pid/cmdline" '')
   EMITTED_INSTANCE+='},"security":{"cmdline_redaction":'
-  EMITTED_INSTANCE+=$(fact 'collected' 'raw cmdline values redacted' 'procfs_cmdline' "/proc/$pid/cmdline" '')
+  EMITTED_INSTANCE+=$(fact 'collected' 'raw cmdline values redacted' 'procfs' "/proc/$pid/cmdline" '')
   EMITTED_INSTANCE+='},"logging":{"configuration":'
-  EMITTED_INSTANCE+=$(fact 'not_collected' '' 'prototype' 'logging not inspected' "$logging_issue")
-  EMITTED_INSTANCE+='},"connectors":[],"executors":[],"applications":['
-  EMITTED_INSTANCE+=$(fact "$apps_status" "$apps" 'config_path' 'webapps directory entries' "$apps_issue")
-  EMITTED_INSTANCE+='],"filesystems":['
-  EMITTED_INSTANCE+=$(fact "$base_status" "$base_value" 'procfs_cmdline' "/proc/$pid/cmdline" "$id_csv")
-  EMITTED_INSTANCE+='],"collection_issue_ids":['
+  EMITTED_INSTANCE+=$(fact 'not_collected' '' 'command' 'logging inspection unavailable' "$logging_issue")
+  EMITTED_INSTANCE+='},"connectors":[],"executors":[],"applications":[],"filesystems":[],"collection_issue_ids":['
   local first=1 iid
   local all_ids=$id_csv
   all_ids=$(csv_append "$all_ids" "$version_issue")
@@ -392,7 +408,7 @@ printf '"middleware_type":"tomcat",'
 printf '"protocol_version":"1.0",'
 printf '"script_version":"%s",' "$SCRIPT_VERSION"
 printf '"collected_at":"%s",' "$collected_at"
-printf '"host":{"hostname":'; fact "$host_status" "$host_name" 'host' 'hostname' "$host_issue"; printf '},'
+printf '"host":{"hostname":'; fact "$host_status" "$host_name" 'command' 'hostname' "$host_issue"; printf '},'
 printf '"discovery":{"coverage":"%s","methods":[{"method":"procfs_cmdline","status":"%s","issue_ids":[' "$coverage" "$method_status"
 oldifs=$IFS; IFS=','; first=1
 for iid in $method_issue_ids; do [ -n "$iid" ] || continue; [ "$first" -eq 1 ] || printf ','; jstr "$iid"; first=0; done

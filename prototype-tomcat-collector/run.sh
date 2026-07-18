@@ -44,6 +44,17 @@ setup_duplicate_fixture() {
   printf '%s\n' "$proc|$cfg"
 }
 setup_zero_fixture() { local proc="$TMP/zero/proc" cfg="$TMP/zero/cfg"; mkdir -p "$proc/301" "$cfg"; write_cmdline "$proc/301/cmdline" sleep 100; printf '%s\n' "$proc|$cfg"; }
+setup_release_notes_degradation_fixture() {
+  local proc="$TMP/release-degrade/proc" cfg="$TMP/release-degrade/cfg"
+  mkdir -p "$proc/501" "$proc/502" "$cfg/missing/base/conf" "$cfg/unreadable/base/conf"
+  write_cmdline "$proc/501/cmdline" java '-Dcatalina.base=/missing/base' org.apache.catalina.startup.Bootstrap
+  write_cmdline "$proc/502/cmdline" java '-Dcatalina.base=/unreadable/base' org.apache.catalina.startup.Bootstrap
+  printf '<Server />\n' > "$cfg/missing/base/conf/server.xml"
+  printf '<Server />\n' > "$cfg/unreadable/base/conf/server.xml"
+  printf 'Apache Tomcat Version 9.0.1\n' > "$cfg/unreadable/base/RELEASE-NOTES"
+  printf 'unreadable\n' > "$cfg/unreadable/base/RELEASE-NOTES.fixture-state"
+  printf '%s\n' "$proc|$cfg"
+}
 setup_limited_fixture() { local proc="$TMP/limited/proc" cfg="$TMP/limited/cfg"; mkdir -p "$proc/401" "$proc/402" "$cfg"; write_cmdline "$proc/401/cmdline" sleep 100; : > "$proc/402/cmdline"; chmod 000 "$proc/402/cmdline" 2>/dev/null || true; printf '%s\n' "$proc|$cfg"; }
 
 extract_json() {
@@ -72,10 +83,27 @@ for issue in data['collection_issues']:
     assert re.match(r'^ci-[0-9]{4}$',issue['issue_id']) and issue['code'] in codes and issue['scope'] in scopes and issue['subject'].startswith('/') and '\n' not in issue['message']
     ids.append(issue['issue_id'])
 assert len(ids)==len(set(ids)); issue_set=set(ids); refs=[]
+def resolve_pointer(document, pointer):
+    assert pointer == '' or pointer.startswith('/'), pointer
+    node=document
+    if pointer == '': return node
+    for raw in pointer[1:].split('/'):
+        token=raw.replace('~1','/').replace('~0','~')
+        if isinstance(node,list):
+            assert token.isdigit(), (pointer, token)
+            index=int(token)
+            assert 0 <= index < len(node), (pointer, index)
+            node=node[index]
+        else:
+            assert isinstance(node,dict) and token in node, (pointer, token)
+            node=node[token]
+    return node
+for issue in data['collection_issues']:
+    resolve_pointer(data, issue['subject'])
 def walk(x):
     if isinstance(x,dict):
         if {'status','source','issue_ids'} <= set(x):
-            assert x['status'] in statuses and set(x['source'])=={'kind','locator'} and x['source']['kind'] in {'host','procfs_cmdline','release_notes','config_path','prototype'} and isinstance(x['issue_ids'],list)
+            assert x['status'] in statuses and set(x['source'])=={'kind','locator'} and x['source']['kind'] in {'procfs','command','file_metadata','parsed_config','jvm_argument','derived_default'} and isinstance(x['issue_ids'],list)
             refs.extend(x['issue_ids'])
             if x['status']=='collected': assert 'value' in x and x['issue_ids']==[]
             if x['status']=='not_collected': assert 'value' not in x and x['issue_ids']
@@ -92,6 +120,7 @@ for inst in data['instances']:
     assert set(inst) <= {'instance_id','pid','catalina_base','identity','tomcat','jvm','security','logging','connectors','executors','applications','filesystems','collection_issue_ids'}
     assert inst['instance_id']=='pid:%d' % inst['pid']
     assert set(inst['identity'])=={'pid','catalina_base'} and set(inst['tomcat'])=={'version','server_xml'}
+    assert inst['connectors']==[] and inst['executors']==[] and inst['applications']==[] and inst['filesystems']==[]
     refs.extend(inst['collection_issue_ids'])
 assert all(ref in issue_set for ref in refs), (refs, issue_set)
 assert set(refs) <= issue_set
@@ -139,6 +168,18 @@ assert data['instances'] == []
 assert data['discovery']['coverage'] == 'partial'
 assert any(i['code'] in {'permission_denied','hidden_by_procfs'} for i in data['collection_issues'])
 assert not any('zero' in i['message'].lower() for i in data['collection_issues'])
+"""
+IFS='|' read -r proc cfg < <(setup_release_notes_degradation_fixture)
+out="$TMP/release-degrade.out"; err="$TMP/release-degrade.err"
+"$COLLECTOR" --fixture-proc-root "$proc" --fixture-config-root "$cfg" > "$out" 2> "$err"
+if [ ! -s "$err" ]; then pass 'release notes degradation emits no stderr'; else fail 'release notes degradation emits no stderr'; fi
+assert_json 'release notes missing and unreadable are distinguished' "$out" """
+issues={(i['subject'],i['code']) for i in data['collection_issues']}
+assert ('/instances/0/tomcat/version','path_not_found') in issues
+assert ('/instances/1/tomcat/version','config_unreadable') in issues
+for inst in data['instances']:
+    fact=inst['tomcat']['version']
+    assert fact['status']=='not_collected' and 'value' not in fact and len(fact['issue_ids'])==1
 """
 mkdir -p "$TMP/no-hostname-bin"
 ln -sf "$(command -v date)" "$TMP/no-hostname-bin/date"
