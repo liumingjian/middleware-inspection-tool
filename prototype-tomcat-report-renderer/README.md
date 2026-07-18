@@ -19,7 +19,8 @@ The tests prove these decisions in generated Markdown and DOCX:
 - One valid Tomcat instance produces one report; there is no host/cluster aggregate report.
 - Fixed major sections appear in order: 报告说明, 实例概况, 结论摘要, 六巡检域, 无法判断与采集限制, 附录.
 - The six inspection domains are fixed and ordered: 主机资源, Tomcat 实例与 JVM, Connector 与线程池, Tomcat 配置安全, 应用部署, 日志配置与文件状态.
-- The representative fixtures use exact canonical rule IDs and reason semantics from issue #5: supported 9.0/10.1 normal lifecycle, deterministic degraded warning/abnormal/undetermined results, and a true no-AJP `not_applicable` result.
+- The representative fixtures use exact canonical rule IDs and reason semantics from issue #5: supported 9.0/10.1 normal lifecycle, deterministic degraded warning/abnormal/undetermined results, and a true no-AJP `not_applicable` result. They validate rendering semantics, not full rule-catalog coverage.
+- Instance object-result counts and shared-result counts are shown separately for all five conclusions; warning/abnormal/undetermined also show affected-rule counts deduplicated by `rule_id`.
 - Structured rule rows retain `subject`, ordered `reason_codes`, `fact_refs`, `related_subjects`, `evidence_limitations`, `recommendation_ids`, and `verification_ids`. Tests enforce remediation only for warning/abnormal and verification only for undetermined.
 - Summary counts keep normal/warning/abnormal/undetermined/not_applicable separate and render them as 正常、警告、异常、无法判断、不适用. No overall risk, rating, or score is rendered.
 - CPU/load, heap/thread, application-count, and log-size facts are observations, rendered as non-judgmental notes and excluded from rule counts.

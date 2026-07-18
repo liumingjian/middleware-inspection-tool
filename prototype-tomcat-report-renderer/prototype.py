@@ -84,6 +84,8 @@ class ReportView:
     instance: InstanceIdentity
     user_revised: bool  # Always false: this is the immutable initial system view.
     summary_counts: dict[str, int]
+    shared_summary_counts: dict[str, int]
+    affected_rule_counts: dict[str, int]
     shared_result_references: tuple[SharedResultReference, ...]
     rules: tuple[RuleResult, ...]
     observations: tuple[Observation, ...]
@@ -97,7 +99,11 @@ class ReportView:
         if self.user_revised:
             raise ValueError("ReportView is the initial system view; user_revised must be false")
         if self.instance.instance_id == "aggregate" or set(self.summary_counts) != set(CONCLUSIONS):
-            raise ValueError("invalid report scope or summary")
+            raise ValueError("invalid report scope or instance summary")
+        if set(self.shared_summary_counts) != set(CONCLUSIONS):
+            raise ValueError("shared summary must contain canonical conclusions")
+        if set(self.affected_rule_counts) != {"warning", "abnormal", "undetermined"}:
+            raise ValueError("affected rule counts must contain problem conclusions")
         seen: set[tuple[str, str]] = set()
         counts = {code: 0 for code in CONCLUSIONS}
         for rule in self.rules:
@@ -107,7 +113,16 @@ class ReportView:
             seen.add((rule.rule_id, rule.subject))
             counts[rule.conclusion] += 1
         if counts != self.summary_counts:
-            raise ValueError("summary must count rules only")
+            raise ValueError("instance summary must count instance rules only")
+        shared_counts = {code: sum(r.conclusion == code for r in self.shared_result_references) for code in CONCLUSIONS}
+        if shared_counts != self.shared_summary_counts:
+            raise ValueError("shared summary must count shared results only")
+        affected_counts = {
+            code: len({r.rule_id for r in self.rules if r.conclusion == code})
+            for code in ("warning", "abnormal", "undetermined")
+        }
+        if affected_counts != self.affected_rule_counts:
+            raise ValueError("affected rule counts must deduplicate instance rule ids")
 
 
 def rule(rule_id: str, domain: str, subject: str, conclusion: str, reason: str, fact: str, *, rec: str = "", verify: str = "", limitation: str = "") -> RuleResult:
@@ -141,6 +156,13 @@ def make_report(instance_id: str, version: str, degraded: bool = False) -> Repor
             rule("LOGGING.ROTATION", "日志配置与文件状态", f"{base}/logging/targets/0", "normal", "logging_rotation_configured", f"{base}/logging/targets/0/rotation"),
         )
     counts = {code: sum(r.conclusion == code for r in rules) for code in CONCLUSIONS}
+    shared_results = (
+        SharedResultReference("INSTANCE.DISCOVERY", "/discovery", "normal", "discovery_complete"),
+        SharedResultReference("HOST.VISIBILITY", "/host", "normal", "host_visibility_complete"),
+        SharedResultReference("HOST.MEMORY_CAPACITY", "/host", "normal", "available_memory_not_exhausted"),
+    )
+    shared_counts = {code: sum(r.conclusion == code for r in shared_results) for code in CONCLUSIONS}
+    affected_counts = {code: len({r.rule_id for r in rules if r.conclusion == code}) for code in ("warning", "abnormal", "undetermined")}
     host = f"tomcat-{instance_id}"
     report = ReportView(
         **METADATA,
@@ -148,11 +170,9 @@ def make_report(instance_id: str, version: str, degraded: bool = False) -> Repor
         instance=InstanceIdentity(instance_id, host, version, f"/srv/{host}", "tomcat", "8080" if instance_id == "A" else "18080"),
         user_revised=False,
         summary_counts=counts,
-        shared_result_references=(
-            SharedResultReference("INSTANCE.DISCOVERY", "/discovery", "normal", "discovery_complete"),
-            SharedResultReference("HOST.VISIBILITY", "/host", "normal", "host_visibility_complete"),
-            SharedResultReference("HOST.MEMORY_CAPACITY", "/host", "normal", "available_memory_not_exhausted"),
-        ),
+        shared_summary_counts=shared_counts,
+        affected_rule_counts=affected_counts,
+        shared_result_references=shared_results,
         rules=rules,
         observations=(
             Observation("HOST.CPU_CAPACITY", "主机资源", "CPU 核数、瞬时 CPU 与系统负载仅作观察。", "/host/cpu"),
@@ -176,6 +196,10 @@ def render_report_view_markdown(report: ReportView) -> str:
     lines += [f"| {k} | {v} |" for k, v in metadata]
     lines += ["", "## 结论摘要", "", "| 状态 | 数量 |", "| --- | --- |"]
     lines += [f"| {LABELS[code]} | {report.summary_counts[code]} |" for code in CONCLUSIONS]
+    lines += ["", "以上为当前实例的对象级规则结果数，不包含 shared 结果。", "", "| shared 状态 | 结果数 |", "| --- | --- |"]
+    lines += [f"| {LABELS[code]} | {report.shared_summary_counts[code]} |" for code in CONCLUSIONS]
+    lines += ["", "| 问题结论 | 受影响规则数 |", "| --- | --- |"]
+    lines += [f"| {LABELS[code]} | {report.affected_rule_counts[code]} |" for code in ("warning", "abnormal", "undetermined")]
     lines += ["", "观察项为非判断性事实记录，不计入规则结果数量。", "本报告不提供总体风险、评级或评分。", "", "## 六巡检域", ""]
     for domain in DOMAINS:
         lines += [f"### {domain}", "", "| 规则ID | subject | 结论 | reason_codes | fact_refs |", "| --- | --- | --- | --- | --- |"]
@@ -390,6 +414,10 @@ def scenario_canonical_normal_9_and_10() -> None:
 def scenario_canonical_degraded() -> None:
     report = make_report("B", "10.1.24", True); _, docx, md = write_artifacts("degraded", report)
     check(all_text(docx).find("警告") >= 0 and all_text(docx).find("异常") >= 0 and all_text(docx).find("无法判断") >= 0, "degraded conclusions missing")
+    check(report.summary_counts == {"normal": 1, "warning": 1, "abnormal": 3, "undetermined": 2, "not_applicable": 1}, "instance result counts wrong")
+    check(report.shared_summary_counts == {"normal": 3, "warning": 0, "abnormal": 0, "undetermined": 0, "not_applicable": 0}, "shared counts wrong")
+    check(report.affected_rule_counts == {"warning": 1, "abnormal": 3, "undetermined": 2}, "affected rule counts wrong")
+    check("当前实例的对象级规则结果数，不包含 shared 结果" in md and "受影响规则数" in md, "statistics boundary absent")
     for r in report.rules: r.validate()
     check("核查建议" in md and "整改建议" in md, "recommendation/verification separation absent")
     check("SR-JVM" not in md and "SR-CONN" not in md, "instance facts mislabeled shared")
