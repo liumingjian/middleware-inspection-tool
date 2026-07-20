@@ -8,6 +8,19 @@ export const LOG_END = '===TOMCAT_INSPECTION_JSON_END===';
 
 const SCRIPT_PATH = new URL('../scripts/tomcat-readonly-collector.sh', import.meta.url);
 
+export class InspectionLogError extends Error {
+  constructor(code, path, message) {
+    super(message);
+    this.name = 'InspectionLogError';
+    this.code = code;
+    this.path = path;
+  }
+}
+
+function rejectLog(code, path, message) {
+  throw new InspectionLogError(code, path, message);
+}
+
 export function getTomcatScriptAsset() {
   return {
     middleware: 'tomcat',
@@ -26,8 +39,11 @@ export async function generateTomcatMarkdownReport({
   uploadedFile,
   generatedAt = new Date().toISOString()
 }) {
+  if (!selectedMiddleware) {
+    rejectLog('MIDDLEWARE_REQUIRED', 'selectedMiddleware', '必须显式选择中间件类型。');
+  }
   if (selectedMiddleware !== 'tomcat') {
-    throw new Error('必须显式选择 Tomcat 后才能生成 Tomcat 巡检报告。');
+    rejectLog('MIDDLEWARE_UNSUPPORTED', 'selectedMiddleware', '所选中间件类型不受支持。');
   }
 
   const carrier = uploadedFile ? uploadedFile.content.toString('utf8') : pastedLogCarrier;
@@ -46,20 +62,54 @@ function parseBoundedLog(carrier) {
   const endCount = text.split(LOG_END).length - 1;
 
   if (beginCount !== 1 || endCount !== 1) {
-    throw new Error('日志输入载体必须包含且只包含一对 Tomcat 巡检日志边界。');
+    rejectLog('BOUNDARY_COUNT_INVALID', 'carrier', '日志输入载体必须包含且只包含一对巡检日志边界。');
   }
 
   const beginIndex = text.indexOf(LOG_BEGIN);
   const endIndex = text.indexOf(LOG_END);
   if (endIndex <= beginIndex) {
-    throw new Error('Tomcat 巡检日志边界顺序无效。');
+    rejectLog('BOUNDARY_ORDER_INVALID', 'carrier', '巡检日志边界顺序无效。');
   }
 
   const jsonText = text.slice(beginIndex + LOG_BEGIN.length, endIndex).trim();
-  const document = JSON.parse(jsonText);
+  let document;
+  try {
+    document = JSON.parse(jsonText);
+  } catch {
+    rejectLog('JSON_INVALID', 'document', '边界内必须是单个有效 JSON 文档。');
+  }
 
-  if (document.middleware !== 'tomcat' || document.protocolVersion !== TOMCAT_PROTOCOL_VERSION) {
-    throw new Error('日志中间件类型或协议版本与 Tomcat 巡检组件不兼容。');
+  if (!document || Array.isArray(document) || typeof document !== 'object') {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'document', '巡检日志顶层结构无效。');
+  }
+  if (!Object.hasOwn(document, 'middleware')) {
+    rejectLog('MIDDLEWARE_MISSING', 'middleware', '巡检日志缺少中间件声明。');
+  }
+  if (document.middleware !== 'tomcat') {
+    rejectLog('MIDDLEWARE_MISMATCH', 'middleware', '巡检日志中间件声明与所选类型冲突。');
+  }
+  if (!Object.hasOwn(document, 'protocolVersion')) {
+    rejectLog('PROTOCOL_MISSING', 'protocolVersion', '巡检日志缺少协议版本。');
+  }
+  if (document.protocolVersion !== TOMCAT_PROTOCOL_VERSION) {
+    rejectLog('PROTOCOL_UNSUPPORTED', 'protocolVersion', '巡检日志协议版本不受支持。');
+  }
+  if (typeof document.collectorVersion !== 'string') {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'collectorVersion', '巡检日志顶层结构无效。');
+  }
+  if (typeof document.collectedAt !== 'string') {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'collectedAt', '巡检日志顶层结构无效。');
+  }
+  if (!document.host || typeof document.host !== 'object' || Array.isArray(document.host)) {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'host', '巡检日志顶层结构无效。');
+  }
+  if (!Array.isArray(document.instances) || document.instances.length === 0) {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'instances', '巡检日志顶层结构无效。');
+  }
+  for (const instance of document.instances) {
+    if (!instance || typeof instance !== 'object' || typeof instance.instanceId !== 'string' || !Array.isArray(instance.checks)) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', 'instances', '巡检日志实例结构无效。');
+    }
   }
 
   return document;
