@@ -1,0 +1,5 @@
+terminal noise before log
+===TOMCAT_INSPECTION_JSON_BEGIN===
+{"middleware":"tomcat","protocolVersion":"tomcat-inspection-log/v1","collectorVersion":"tomcat-readonly-collector/0.1.0","collectedAt":"2026-07-21T00:00:00Z","host":{"hostname":"demo-host","ip":"192.0.2.10"},"instances":[{"instanceId":"demo-host:12345","pid":12345,"catalinaBase":"/opt/tomcat-demo","httpPort":8080,"checks":[{"id":"tomcat.http.port.present","observedValue":8080,"evidence":"TOMCAT_INSPECTOR_HTTP_PORT"}]}]}
+===TOMCAT_INSPECTION_JSON_END===
+terminal prompt after log
