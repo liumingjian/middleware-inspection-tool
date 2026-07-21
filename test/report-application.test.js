@@ -5,6 +5,38 @@ import { getTomcatScriptAsset, generateTomcatMarkdownReport, LOG_BEGIN, LOG_END 
 
 const sampleLog = readFileSync(new URL('./fixtures/tomcat-single-instance.log', import.meta.url), 'utf8');
 
+function buildCarrier(instanceOverrides) {
+  const document = {
+    middleware: 'tomcat',
+    protocolVersion: 'tomcat-inspection-log/v1',
+    collectorVersion: 'tomcat-readonly-collector/0.1.0',
+    collectedAt: '2026-07-21T00:00:00Z',
+    host: { hostname: 'demo-host', ip: '192.0.2.10' },
+    instances: [
+      {
+        instanceId: 'demo-host:12345',
+        pid: 12345,
+        catalinaBase: '/opt/tomcat-demo',
+        tomcatVersion: '9.0.85',
+        javaVersion: '17.0.10',
+        jvmStartup: {
+          source: 'TOMCAT_INSPECTOR_JVM_ARGS',
+          trusted: true,
+          args: ['-Xms512m', '-Xmx1024m', '-XX:+UseG1GC', '-Xlog:gc*:file=/var/log/tomcat/gc.log'],
+          xms: '512m',
+          xmx: '1024m',
+          gc: 'G1GC',
+          gcLog: '/var/log/tomcat/gc.log'
+        },
+        httpPort: 8080,
+        checks: [],
+        ...instanceOverrides
+      }
+    ]
+  };
+  return `${LOG_BEGIN}\n${JSON.stringify(document)}\n${LOG_END}`;
+}
+
 test('script management exposes the current Tomcat collector for copy and download', () => {
   const asset = getTomcatScriptAsset();
 
@@ -34,6 +66,8 @@ test('report generation application boundary turns a pasted Tomcat log carrier i
 - 主机 IP：192.0.2.10
 - 进程号：12345
 - CATALINA_BASE：/opt/tomcat-demo
+- Tomcat 版本：9.0.85
+- Java 版本：17.0.10
 
 ## 版本与时间
 
@@ -43,12 +77,63 @@ test('report generation application boundary turns a pasted Tomcat log carrier i
 - 采集时间：2026-07-21T00:00:00Z
 - 报告生成时间：2026-07-21T01:02:03Z
 
+## JVM 启动配置
+
+- 启动参数来源：TOMCAT_INSPECTOR_JVM_ARGS（可信）
+- JVM 参数：-Xms512m -Xmx1024m -XX:+UseG1GC -Xlog:gc*:file=/var/log/tomcat/gc.log
+
 ## 巡检结论
 
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
+| tomcat.instance.identity.present | 正常 | 实例标识：demo-host:12345 | 已采集实例身份，按本次采集主机与进程号区分报告。 |
+| tomcat.version.support | 正常 | Tomcat 版本：9.0.85（支持 Tomcat 9.0） | 当前版本在 Tomcat MVP 支持范围内。 |
+| tomcat.java.version.present | 正常 | Java 版本：17.0.10 | 已采集 Java 版本，结合 Tomcat 版本继续复核兼容性。 |
+| tomcat.jvm.xms.present | 正常 | -Xms：512m | 已采集 JVM 初始堆参数，按容量规划复核。 |
+| tomcat.jvm.xmx.present | 正常 | -Xmx：1024m | 已采集 JVM 最大堆参数，按容量规划复核。 |
+| tomcat.jvm.gc.present | 正常 | GC：G1GC | 已采集 GC 选择参数，结合 Java 版本复核。 |
+| tomcat.jvm.gc-log.present | 正常 | GC 日志：/var/log/tomcat/gc.log | 已采集 GC 日志配置，确认日志路径可写且纳入运维留存。 |
 | tomcat.http.port.present | 正常 | HTTP 端口：8080 | 已采集到 Tomcat HTTP 端口，保持现有配置审查流程。 |
 `);
+});
+
+test('report generation marks unsupported Tomcat minor lines instead of treating them as supported', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ tomcatVersion: '7.0.109' }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.match(result.reports[0].markdown, /tomcat\.version\.support \| 警告 \| Tomcat 版本：7\.0\.109（不支持版本）/);
+  assert.match(result.reports[0].markdown, /Tomcat MVP 仅明确支持 8\.5、9\.0 和 10\.1/);
+});
+
+test('report generation does not classify a missing Tomcat version as unsupported', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ tomcatVersion: '' }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.match(result.reports[0].markdown, /tomcat\.version\.support \| 无法判断 \| Tomcat 版本：未采集/);
+  assert.match(result.reports[0].markdown, /补充 Tomcat 版本后人工核查适用规则。/);
+});
+
+test('report generation produces per-item unknown conclusions when JVM startup evidence is missing', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({
+      jvmStartup: { source: 'ps.args', trusted: false, args: [] }
+    }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  const markdown = result.reports[0].markdown;
+  assert.match(markdown, /启动参数来源：ps\.args（不可信）/);
+  assert.match(markdown, /tomcat\.jvm\.xms\.present \| 无法判断 \| -Xms：未采集 \| 补充可信 JVM 启动参数来源后人工核查。/);
+  assert.match(markdown, /tomcat\.jvm\.xmx\.present \| 无法判断 \| -Xmx：未采集 \| 补充可信 JVM 启动参数来源后人工核查。/);
+  assert.match(markdown, /tomcat\.jvm\.gc\.present \| 无法判断 \| GC：未采集 \| 补充可信 JVM 启动参数来源后人工核查。/);
+  assert.match(markdown, /tomcat\.jvm\.gc-log\.present \| 无法判断 \| GC 日志：未采集 \| 补充可信 JVM 启动参数来源后人工核查。/);
 });
 
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {
@@ -100,5 +185,5 @@ test('report generation application boundary also accepts an uploaded log file b
 
   assert.equal(result.reports.length, 1);
   assert.match(result.reports[0].markdown, /# Tomcat 单实例巡检报告/);
-  assert.match(result.reports[0].markdown, /tomcat.http.port.present \| 正常/);
+  assert.match(result.reports[0].markdown, /tomcat.jvm.xmx.present \| 正常/);
 });
