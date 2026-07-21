@@ -9,9 +9,16 @@ host_ip="${TOMCAT_INSPECTOR_HOST_IP:-127.0.0.1}"
 pid_value="${TOMCAT_INSPECTOR_PID:-1}"
 catalina_base="${TOMCAT_INSPECTOR_CATALINA_BASE:-/opt/tomcat}"
 http_port="${TOMCAT_INSPECTOR_HTTP_PORT:-8080}"
-tomcat_version="${TOMCAT_INSPECTOR_TOMCAT_VERSION:-unknown}"
-java_version="${TOMCAT_INSPECTOR_JAVA_VERSION:-unknown}"
+tomcat_version="${TOMCAT_INSPECTOR_TOMCAT_VERSION:-}"
+java_version="${TOMCAT_INSPECTOR_JAVA_VERSION:-}"
 jvm_args="${TOMCAT_INSPECTOR_JVM_ARGS:-}"
+if [[ -n "$jvm_args" ]]; then
+  jvm_source="TOMCAT_INSPECTOR_JVM_ARGS"
+  jvm_trusted=true
+else
+  jvm_source=""
+  jvm_trusted=false
+fi
 
 split_jvm_args() {
   python3 -c 'import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))'
@@ -43,9 +50,12 @@ json_escape() {
 
 hostname_json=$(printf '%s' "$hostname_value" | json_escape)
 host_ip_json=$(printf '%s' "$host_ip" | json_escape)
+instance_id="${host_ip}:${pid_value}"
+instance_id_json=$(printf '%s' "$instance_id" | json_escape)
 catalina_base_json=$(printf '%s' "$catalina_base" | json_escape)
 tomcat_version_json=$(printf '%s' "$tomcat_version" | json_escape)
 java_version_json=$(printf '%s' "$java_version" | json_escape)
+jvm_source_json=$(printf '%s' "$jvm_source" | json_escape)
 jvm_args_json=$(printf '%s' "$jvm_args" | split_jvm_args)
 jvm_xms=$(printf '%s' "$jvm_args" | extract_jvm_fact xms)
 jvm_xmx=$(printf '%s' "$jvm_args" | extract_jvm_fact xmx)
@@ -64,15 +74,15 @@ printf '"collectorVersion":"%s",' "$collector_version"
 printf '"collectedAt":"%s",' "$collected_at"
 printf '"host":{"hostname":%s,"ip":%s},' "$hostname_json" "$host_ip_json"
 printf '"instances":[{'
-printf '"instanceId":"%s:%s",' "$hostname_value" "$pid_value"
+printf '"instanceId":%s,' "$instance_id_json"
 printf '"pid":%s,' "$pid_value"
 printf '"catalinaBase":%s,' "$catalina_base_json"
 printf '"tomcatVersion":%s,' "$tomcat_version_json"
 printf '"javaVersion":%s,' "$java_version_json"
-printf '"jvmStartup":{"source":"TOMCAT_INSPECTOR_JVM_ARGS","trusted":true,"args":%s,"xms":%s,"xmx":%s,"gc":%s,"gcLog":%s},' "$jvm_args_json" "$jvm_xms_json" "$jvm_xmx_json" "$jvm_gc_json" "$jvm_gc_log_json"
+printf '"jvmStartup":{"source":%s,"trusted":%s,"args":%s,"xms":%s,"xmx":%s,"gc":%s,"gcLog":%s},' "$jvm_source_json" "$jvm_trusted" "$jvm_args_json" "$jvm_xms_json" "$jvm_xmx_json" "$jvm_gc_json" "$jvm_gc_log_json"
 printf '"httpPort":%s,' "$http_port"
 printf '"checks":['
-printf '{"id":"tomcat.instance.identity.present","observedValue":"%s:%s","evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},' "$hostname_value" "$pid_value"
+printf '{"id":"tomcat.instance.identity.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},' "$instance_id_json"
 printf '{"id":"tomcat.version.support","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},' "$tomcat_version_json"
 printf '{"id":"tomcat.java.version.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JAVA_VERSION"},' "$java_version_json"
 printf '{"id":"tomcat.jvm.xms.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JVM_ARGS"},' "$jvm_xms_json"

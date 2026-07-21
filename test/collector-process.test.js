@@ -39,7 +39,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
   assert.deepEqual(document.host, { hostname: 'demo-host', ip: '192.0.2.10' });
   assert.equal(document.instances.length, 1);
   assert.deepEqual(document.instances[0], {
-    instanceId: 'demo-host:12345',
+    instanceId: '192.0.2.10:12345',
     pid: 12345,
     catalinaBase: '/opt/tomcat-demo',
     tomcatVersion: '9.0.85',
@@ -57,7 +57,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
     checks: [
       {
         id: 'tomcat.instance.identity.present',
-        observedValue: 'demo-host:12345',
+        observedValue: '192.0.2.10:12345',
         evidence: 'TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE'
       },
       {

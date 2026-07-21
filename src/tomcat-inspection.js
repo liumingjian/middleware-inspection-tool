@@ -168,13 +168,17 @@ function buildCheckRows(instance) {
     },
     {
       id: 'tomcat.version.support',
-      conclusion: supportedLine ? '正常' : '警告',
+      conclusion: supportedLine ? '正常' : instance.tomcatVersion ? '警告' : '无法判断',
       fact: supportedLine
         ? `Tomcat 版本：${instance.tomcatVersion}（支持 Tomcat ${supportedLine}）`
-        : `Tomcat 版本：${instance.tomcatVersion ?? '未采集'}（不支持版本）`,
+        : instance.tomcatVersion
+          ? `Tomcat 版本：${instance.tomcatVersion}（不支持版本）`
+          : 'Tomcat 版本：未采集',
       suggestion: supportedLine
         ? '当前版本在 Tomcat MVP 支持范围内。'
-        : 'Tomcat MVP 仅明确支持 8.5、9.0 和 10.1；不支持版本需人工确认适用规则。'
+        : instance.tomcatVersion
+          ? 'Tomcat MVP 仅明确支持 8.5、9.0 和 10.1；不支持版本需人工确认适用规则。'
+          : '补充 Tomcat 版本后人工核查适用规则。'
     },
     {
       id: 'tomcat.java.version.present',

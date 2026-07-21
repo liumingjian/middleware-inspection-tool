@@ -108,6 +108,17 @@ test('report generation marks unsupported Tomcat minor lines instead of treating
   assert.match(result.reports[0].markdown, /Tomcat MVP 仅明确支持 8\.5、9\.0 和 10\.1/);
 });
 
+test('report generation does not classify a missing Tomcat version as unsupported', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ tomcatVersion: '' }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.match(result.reports[0].markdown, /tomcat\.version\.support \| 无法判断 \| Tomcat 版本：未采集/);
+  assert.match(result.reports[0].markdown, /补充 Tomcat 版本后人工核查适用规则。/);
+});
+
 test('report generation produces per-item unknown conclusions when JVM startup evidence is missing', async () => {
   const result = await generateTomcatMarkdownReport({
     selectedMiddleware: 'tomcat',
