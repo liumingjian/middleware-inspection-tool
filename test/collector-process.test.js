@@ -68,6 +68,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
     connectors: [],
     securityConfig: { status: 'unavailable', source: 'local-static-config' },
     deployments: [],
+    logTargets: [],
     httpPort: 8080,
     checks: [
       {
@@ -344,6 +345,31 @@ test('collector records each deployment visibility limitation without inventing 
     { status: 'restricted', source: 'inventory:/secure/webapps' },
     { status: 'unavailable', source: 'context:/opt/tomcat/conf/Catalina/localhost/app.xml' },
     { status: 'unreliable', source: 'deployment-source' }
+  ]);
+});
+
+test('collector structures bounded log configuration targets and file metadata without reading log content', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_LOG_TARGETS: 'catalina-file|success|logging.properties:1|/var/log/tomcat/catalina.log|success|stat:/var/log/tomcat/catalina.log|regular-file|1048576|2026-07-21T00:00:00Z;access-log|restricted|server.xml:Host|-|unavailable|stat:/secure/access.log|-|-|-'
+    }
+  });
+
+  const outputText = String(output);
+  assert.doesNotMatch(outputText, /logContent|errorCount|exceptionPattern|rootCause/);
+  assert.deepEqual(parseCollectorOutput(output).instances[0].logTargets, [
+    {
+      id: 'catalina-file',
+      configuration: { status: 'success', source: 'logging.properties:1', targetPath: '/var/log/tomcat/catalina.log' },
+      fileMetadata: { status: 'success', source: 'stat:/var/log/tomcat/catalina.log', fileType: 'regular-file', sizeBytes: 1048576, modifiedAt: '2026-07-21T00:00:00Z' }
+    },
+    {
+      id: 'access-log',
+      configuration: { status: 'restricted', source: 'server.xml:Host' },
+      fileMetadata: { status: 'unavailable', source: 'stat:/secure/access.log' }
+    }
   ]);
 });
 

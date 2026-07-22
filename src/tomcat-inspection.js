@@ -62,7 +62,8 @@ export async function generateTomcatMarkdownReport({
     const connectorChecks = buildConnectorChecks(instance.connectors, document.host.cpuCount);
     const securityChecks = buildSecurityChecks(instance.securityConfig);
     const deploymentChecks = buildDeploymentChecks(instance.deployments);
-    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks];
+    const logChecks = buildLogChecks(instance.logTargets);
+    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks, ...logChecks];
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
@@ -70,6 +71,7 @@ export async function generateTomcatMarkdownReport({
       connectorChecks,
       securityChecks,
       deploymentChecks,
+      logChecks,
       conclusionSummary: summarizeConclusions(checkRows),
       markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
     });
@@ -119,7 +121,41 @@ function validateInstance(instance, index) {
   validateConnectors(instance.connectors, path);
   validateSecurityConfig(instance.securityConfig, path);
   validateDeployments(instance.deployments, path);
+  validateLogTargets(instance.logTargets, path);
   return reasons;
+}
+
+function validateLogTargets(targets, instancePath) {
+  if (targets === undefined) return;
+  if (!Array.isArray(targets)) rejectLog('DOCUMENT_SCHEMA_INVALID', `${instancePath}.logTargets`, '日志配置与文件状态事实结构无效。');
+  const statuses = ['success', 'restricted', 'unavailable', 'unreliable'];
+  targets.forEach((target, index) => {
+    const path = `${instancePath}.logTargets[${index}]`;
+    if (!target || typeof target !== 'object' || Array.isArray(target)
+      || typeof target.id !== 'string' || !target.id
+      || !target.configuration || typeof target.configuration !== 'object' || Array.isArray(target.configuration)
+      || !statuses.includes(target.configuration.status)
+      || typeof target.configuration.source !== 'string' || !target.configuration.source
+      || !target.fileMetadata || typeof target.fileMetadata !== 'object' || Array.isArray(target.fileMetadata)
+      || !statuses.includes(target.fileMetadata.status)
+      || typeof target.fileMetadata.source !== 'string' || !target.fileMetadata.source) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', path, '日志配置与文件状态事实结构无效。');
+    }
+    const configurationKeys = target.configuration.status === 'success' ? ['status', 'source', 'targetPath'] : ['status', 'source'];
+    if (Object.keys(target.configuration).some((key) => !configurationKeys.includes(key))
+      || (target.configuration.status === 'success' && (typeof target.configuration.targetPath !== 'string' || !target.configuration.targetPath))) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', `${path}.configuration`, '日志配置证据必须有界且可定位。');
+    }
+    const metadataKeys = target.fileMetadata.status === 'success'
+      ? ['status', 'source', 'fileType', 'sizeBytes', 'modifiedAt']
+      : ['status', 'source'];
+    if (Object.keys(target.fileMetadata).some((key) => !metadataKeys.includes(key))
+      || (target.fileMetadata.status === 'success' && (typeof target.fileMetadata.fileType !== 'string' || !target.fileMetadata.fileType
+        || !Number.isInteger(target.fileMetadata.sizeBytes) || target.fileMetadata.sizeBytes < 0
+        || typeof target.fileMetadata.modifiedAt !== 'string' || !target.fileMetadata.modifiedAt))) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', `${path}.fileMetadata`, '日志文件元数据证据无效。');
+    }
+  });
 }
 
 function validateDeployments(deployments, instancePath) {
@@ -370,12 +406,43 @@ ${rows.filter(({ domain }) => domain === 'static-security').map(({ id, conclusio
 | --- | --- | --- | --- |
 ${rows.filter(({ domain }) => domain === 'application-deployment').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n')}
 
+## 日志配置与文件状态域
+
+> 本域仅检查静态日志配置、输出目标路径和文件元数据，不读取或分析日志正文，不统计错误、不分析异常模式，也不推断故障根因。
+
+| 巡检项 | 结论 | 采集事实 | 建议 |
+| --- | --- | --- | --- |
+${rows.filter(({ domain }) => domain === 'logging-file-status').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n')}
+
 ${observations}## 巡检结论
 
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
-${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security', 'application-deployment'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
+${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security', 'application-deployment', 'logging-file-status'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
 `;
+}
+
+function buildLogChecks(targets) {
+  if (targets === undefined) return [];
+  if (targets.length === 0) {
+    return [logCheck('tomcat.logging.configuration', '无法判断', '采集状态：unavailable；来源：static-log-configuration', '补充约定日志配置、目标路径和文件元数据后人工核查。')];
+  }
+  return targets.flatMap((target) => {
+    const configuration = target.configuration;
+    const metadata = target.fileMetadata;
+    const configurationEvidence = `采集状态：${configuration.status}；来源：${configuration.source}${configuration.status === 'success' ? `；目标路径：${configuration.targetPath}` : ''}`;
+    const metadataEvidence = `采集状态：${metadata.status}；来源：${metadata.source}${metadata.status === 'success' ? `；类型：${metadata.fileType}；大小：${metadata.sizeBytes} bytes；修改时间：${metadata.modifiedAt}` : ''}`;
+    return [
+      logCheck(`tomcat.logging.${target.id}.configuration`, configuration.status === 'success' ? '正常' : '无法判断', configurationEvidence,
+        configuration.status === 'success' ? '已记录可定位的静态日志配置与输出目标；保持配置审查。' : '补充可读且可定位的静态日志配置后人工核查。'),
+      logCheck(`tomcat.logging.${target.id}.file-status`, metadata.status === 'success' ? '正常' : '无法判断', metadataEvidence,
+        metadata.status === 'success' ? '已记录目标文件的有界元数据；结合留存策略人工复核。' : '补充目标路径可访问性和文件元数据后人工核查。')
+    ];
+  });
+}
+
+function logCheck(id, conclusion, evidence, suggestion) {
+  return { id, domain: 'logging-file-status', conclusion, evidence, suggestion };
 }
 
 function buildDeploymentChecks(deployments) {
