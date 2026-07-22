@@ -109,6 +109,28 @@ test('report generation returns partial success and locatable reasons without om
   }]);
 });
 
+test('report generation excludes duplicate instance identities so reports cannot overwrite each other', async () => {
+  const validInstance = JSON.parse(buildCarrier({}).split(LOG_BEGIN)[1].split(LOG_END)[0]).instances[0];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      instances: [validInstance, { ...validInstance, catalinaBase: '/opt/tomcat-duplicate' }]
+    })
+  });
+
+  assert.equal(result.status, 'partial_success');
+  assert.deepEqual(result.reports.map(({ instanceId }) => instanceId), ['demo-host:12345']);
+  assert.deepEqual(result.invalidInstances, [{
+    index: 1,
+    instanceId: 'demo-host:12345',
+    reasons: [{
+      path: 'instances[1].instanceId',
+      code: 'INSTANCE_ID_DUPLICATE',
+      message: '实例标识在本次采集中必须唯一。'
+    }]
+  }]);
+});
+
 test('report generation with no valid instance produces no report and recommends manual verification', async () => {
   const discovery = [
     { method: 'procfs', status: 'restricted', detail: '部分进程目录不可读' },
@@ -160,6 +182,7 @@ test('incomplete discovery remains visible in the instance list and every genera
   assert.equal(result.discoveryComplete, false);
   assert.deepEqual(result.discovery, discovery);
   assert.equal(result.reports[0].discoveryComplete, false);
+  assert.deepEqual(result.reports[0].limitations, ['实例发现途径受限或不可用，实例清单可能不完整。']);
   assert.match(result.reports[0].markdown, /## 实例发现覆盖范围/);
   assert.match(result.reports[0].markdown, /ps：受限（只能查看当前用户进程）/);
   assert.match(result.reports[0].markdown, /systemd：不可用（systemctl 不可用）/);
