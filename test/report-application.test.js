@@ -5,7 +5,7 @@ import { getTomcatScriptAsset, generateTomcatMarkdownReport, LOG_BEGIN, LOG_END 
 
 const sampleLog = readFileSync(new URL('./fixtures/tomcat-single-instance.log', import.meta.url), 'utf8');
 
-function buildCarrier(instanceOverrides) {
+function buildCarrier(instanceOverrides, documentOverrides = {}) {
   const document = {
     middleware: 'tomcat',
     protocolVersion: 'tomcat-inspection-log/v1',
@@ -32,7 +32,8 @@ function buildCarrier(instanceOverrides) {
         checks: [],
         ...instanceOverrides
       }
-    ]
+    ],
+    ...documentOverrides
   };
   return `${LOG_BEGIN}\n${JSON.stringify(document)}\n${LOG_END}`;
 }
@@ -47,6 +48,115 @@ test('script management exposes the current Tomcat collector for copy and downlo
   assert.match(asset.content, /^#!\/usr\/bin\/env bash/);
   assert.match(asset.copyFeedback, /已复制完整 Tomcat 巡检脚本/);
   assert.match(asset.downloadFeedback, /已下载 Tomcat 巡检脚本/);
+});
+
+test('report generation processes every valid instance in one trusted log', async () => {
+  const secondInstance = {
+    instanceId: '192.0.2.10:23456',
+    pid: 23456,
+    catalinaBase: '/opt/tomcat-second',
+    tomcatVersion: '10.1.30',
+    javaVersion: '21.0.4',
+    jvmStartup: { source: 'ps.args', trusted: false, args: [] },
+    checks: []
+  };
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      instances: [
+        JSON.parse(buildCarrier({}).split(LOG_BEGIN)[1].split(LOG_END)[0]).instances[0],
+        secondInstance
+      ]
+    }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.equal(result.status, 'success');
+  assert.deepEqual(result.reports.map(({ instanceId }) => instanceId), ['demo-host:12345', '192.0.2.10:23456']);
+  assert.deepEqual(result.invalidInstances, []);
+});
+
+test('report generation returns partial success and locatable reasons without omitting invalid instances', async () => {
+  const validInstance = JSON.parse(buildCarrier({}).split(LOG_BEGIN)[1].split(LOG_END)[0]).instances[0];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      discovery: [{ method: 'procfs', status: 'success' }],
+      instances: [
+        validInstance,
+        { instanceId: '192.0.2.10:bad-pid', pid: 'bad-pid', catalinaBase: '', checks: [] }
+      ]
+    }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.equal(result.status, 'partial_success');
+  assert.deepEqual(result.reports.map(({ instanceId }) => instanceId), ['demo-host:12345']);
+  assert.deepEqual(result.invalidInstances, [{
+    index: 1,
+    instanceId: '192.0.2.10:bad-pid',
+    reasons: [
+      { path: 'instances[1].pid', code: 'INSTANCE_PID_INVALID', message: '实例进程号必须是正整数。' },
+      { path: 'instances[1].catalinaBase', code: 'INSTANCE_CATALINA_BASE_INVALID', message: '实例 CATALINA_BASE 不能为空。' }
+    ]
+  }]);
+});
+
+test('report generation with no valid instance produces no report and recommends manual verification', async () => {
+  const discovery = [
+    { method: 'procfs', status: 'restricted', detail: '部分进程目录不可读' },
+    { method: 'ps', status: 'unavailable', detail: 'ps 命令不可用' }
+  ];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      discovery,
+      instances: [{ instanceId: '192.0.2.10:bad-pid', pid: 'bad-pid', catalinaBase: '', checks: [] }]
+    })
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.deepEqual(result.reports, []);
+  assert.equal(result.invalidInstances.length, 1);
+  assert.deepEqual(result.discovery, discovery);
+  assert.equal(result.manualReviewAdvice, '未发现有效 Tomcat 实例。请结合发现途径状态人工核查主机上的 Tomcat 进程。');
+});
+
+test('zero visible instances remains distinct from proving that Tomcat is absent', async () => {
+  const discovery = [
+    { method: 'procfs', status: 'success', detail: '当前用户未发现可见 Tomcat 进程' },
+    { method: 'ps', status: 'restricted', detail: '只能查看当前用户进程' }
+  ];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, { discovery, instances: [] })
+  });
+
+  assert.equal(result.status, 'no_visible_instances');
+  assert.deepEqual(result.reports, []);
+  assert.deepEqual(result.invalidInstances, []);
+  assert.deepEqual(result.discovery, discovery);
+  assert.match(result.manualReviewAdvice, /不代表主机不存在 Tomcat/);
+});
+
+test('incomplete discovery remains visible in the instance list and every generated report', async () => {
+  const discovery = [
+    { method: 'procfs', status: 'success', detail: '发现 1 个实例' },
+    { method: 'ps', status: 'restricted', detail: '只能查看当前用户进程' },
+    { method: 'systemd', status: 'unavailable', detail: 'systemctl 不可用' }
+  ];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, { discovery })
+  });
+
+  assert.equal(result.discoveryComplete, false);
+  assert.deepEqual(result.discovery, discovery);
+  assert.equal(result.reports[0].discoveryComplete, false);
+  assert.match(result.reports[0].markdown, /## 实例发现覆盖范围/);
+  assert.match(result.reports[0].markdown, /ps：受限（只能查看当前用户进程）/);
+  assert.match(result.reports[0].markdown, /systemd：不可用（systemctl 不可用）/);
+  assert.match(result.reports[0].markdown, /已发现实例仍可生成报告，但实例清单可能不完整/);
 });
 
 test('report generation application boundary turns a pasted Tomcat log carrier into one Markdown report', async () => {

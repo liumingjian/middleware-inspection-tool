@@ -48,12 +48,65 @@ export async function generateTomcatMarkdownReport({
 
   const carrier = uploadedFile ? uploadedFile.content.toString('utf8') : pastedLogCarrier;
   const document = parseBoundedLog(carrier);
-  const reports = document.instances.map((instance) => ({
-    instanceId: instance.instanceId,
-    markdown: renderMarkdownReport(document, instance, generatedAt)
-  }));
+  const discovery = document.discovery ?? [];
+  const discoveryComplete = discovery.length > 0 && discovery.every(({ status }) => status === 'success');
+  const reports = [];
+  const invalidInstances = [];
+  document.instances.forEach((instance, index) => {
+    const reasons = validateInstance(instance, index);
+    if (reasons.length > 0) {
+      invalidInstances.push({ index, instanceId: instance?.instanceId ?? null, reasons });
+      return;
+    }
+    reports.push({
+      instanceId: instance.instanceId,
+      discoveryComplete,
+      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete)
+    });
+  });
 
-  return { reports };
+  const noVisibleInstances = document.instances.length === 0;
+  const status = noVisibleInstances
+    ? 'no_visible_instances'
+    : invalidInstances.length === 0
+      ? 'success'
+      : reports.length > 0
+        ? 'partial_success'
+        : 'failed';
+
+  return {
+    status,
+    reports,
+    invalidInstances,
+    discovery,
+    discoveryComplete,
+    manualReviewAdvice: reports.length === 0
+      ? noVisibleInstances
+        ? '当前低权用户未发现可见 Tomcat 实例，这不代表主机不存在 Tomcat。请结合发现途径状态人工核查。'
+        : '未发现有效 Tomcat 实例。请结合发现途径状态人工核查主机上的 Tomcat 进程。'
+      : null
+  };
+}
+
+function validateInstance(instance, index) {
+  const reasons = [];
+  const path = `instances[${index}]`;
+  if (!instance || typeof instance !== 'object' || Array.isArray(instance)) {
+    return [{ path, code: 'INSTANCE_INVALID', message: '实例结构无效。' }];
+  }
+  if (typeof instance.instanceId !== 'string' || !instance.instanceId) {
+    reasons.push({ path: `${path}.instanceId`, code: 'INSTANCE_ID_INVALID', message: '实例标识不能为空。' });
+  }
+  if (!Number.isInteger(instance.pid) || instance.pid <= 0) {
+    reasons.push({ path: `${path}.pid`, code: 'INSTANCE_PID_INVALID', message: '实例进程号必须是正整数。' });
+  }
+  if (typeof instance.catalinaBase !== 'string' || !instance.catalinaBase) {
+    reasons.push({ path: `${path}.catalinaBase`, code: 'INSTANCE_CATALINA_BASE_INVALID', message: '实例 CATALINA_BASE 不能为空。' });
+  }
+  if (!Array.isArray(instance.checks)) {
+    reasons.push({ path: `${path}.checks`, code: 'INSTANCE_CHECKS_INVALID', message: '实例巡检项必须是数组。' });
+  }
+  return reasons;
 }
 
 function parseBoundedLog(carrier) {
@@ -103,19 +156,24 @@ function parseBoundedLog(carrier) {
   if (!document.host || typeof document.host !== 'object' || Array.isArray(document.host)) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'host', '巡检日志顶层结构无效。');
   }
-  if (!Array.isArray(document.instances) || document.instances.length === 0) {
+  if (!Array.isArray(document.instances)) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'instances', '巡检日志顶层结构无效。');
-  }
-  for (const instance of document.instances) {
-    if (!instance || typeof instance !== 'object' || typeof instance.instanceId !== 'string' || !Array.isArray(instance.checks)) {
-      rejectLog('DOCUMENT_SCHEMA_INVALID', 'instances', '巡检日志实例结构无效。');
-    }
   }
 
   return document;
 }
 
-function renderMarkdownReport(document, instance, generatedAt) {
+function renderDiscoveryCoverage(discovery, discoveryComplete) {
+  if (discovery.length === 0) return '';
+  const labels = { success: '成功', restricted: '受限', unavailable: '不可用' };
+  const lines = discovery.map(({ method, status, detail }) => `- ${method}：${labels[status] ?? status}（${detail}）`);
+  const limitation = discoveryComplete
+    ? '所有记录的实例发现途径均成功。'
+    : '已发现实例仍可生成报告，但实例清单可能不完整，需人工核查覆盖限制。';
+  return `## 实例发现覆盖范围\n\n${lines.join('\n')}\n\n${limitation}\n\n`;
+}
+
+function renderMarkdownReport(document, instance, generatedAt, discoveryComplete) {
   const rows = buildCheckRows(instance);
   const jvmSource = instance.jvmStartup?.source ?? '未采集';
   const jvmTrust = instance.jvmStartup?.trusted ? '可信' : '不可信';
@@ -142,7 +200,7 @@ function renderMarkdownReport(document, instance, generatedAt) {
 - 采集时间：${document.collectedAt}
 - 报告生成时间：${generatedAt}
 
-## JVM 启动配置
+${renderDiscoveryCoverage(document.discovery ?? [], discoveryComplete)}## JVM 启动配置
 
 - 启动参数来源：${jvmSource}（${jvmTrust}）
 - JVM 参数：${jvmArgs}

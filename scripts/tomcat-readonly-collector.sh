@@ -6,91 +6,90 @@ protocol_version="tomcat-inspection-log/v1"
 collected_at="${TOMCAT_INSPECTOR_FIXED_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 hostname_value="${TOMCAT_INSPECTOR_HOSTNAME:-$(hostname 2>/dev/null || printf unknown-host)}"
 host_ip="${TOMCAT_INSPECTOR_HOST_IP:-127.0.0.1}"
-pid_value="${TOMCAT_INSPECTOR_PID:-1}"
-catalina_base="${TOMCAT_INSPECTOR_CATALINA_BASE:-/opt/tomcat}"
-http_port="${TOMCAT_INSPECTOR_HTTP_PORT:-8080}"
-tomcat_version="${TOMCAT_INSPECTOR_TOMCAT_VERSION:-}"
-java_version="${TOMCAT_INSPECTOR_JAVA_VERSION:-}"
-jvm_args="${TOMCAT_INSPECTOR_JVM_ARGS:-}"
-if [[ -n "$jvm_args" ]]; then
-  jvm_source="TOMCAT_INSPECTOR_JVM_ARGS"
-  jvm_trusted=true
-else
-  jvm_source=""
-  jvm_trusted=false
-fi
 
-split_jvm_args() {
-  python3 -c 'import json,shlex,sys; print(json.dumps(shlex.split(sys.stdin.read())))'
+export collector_version protocol_version collected_at hostname_value host_ip
+python3 <<'PY'
+import json
+import os
+import shlex
+
+
+def jvm_startup(args_text):
+    args = shlex.split(args_text)
+    facts = {"xms": "", "xmx": "", "gc": "", "gcLog": ""}
+    for arg in args:
+        if arg.startswith("-Xms"):
+            facts["xms"] = arg[4:]
+        elif arg.startswith("-Xmx"):
+            facts["xmx"] = arg[4:]
+        elif arg.startswith("-XX:+Use") and arg.endswith("GC"):
+            facts["gc"] = arg[len("-XX:+Use"):-len("GC")] + "GC"
+        elif arg.startswith("-Xlog:") and "file=" in arg:
+            facts["gcLog"] = arg.split("file=", 1)[1].split(":", 1)[0]
+    return {
+        "source": "TOMCAT_INSPECTOR_JVM_ARGS" if args_text else "",
+        "trusted": bool(args_text),
+        "args": args,
+        **facts,
+    }
+
+
+def instance(pid, catalina_base, tomcat_version, java_version, args_text, http_port):
+    startup = jvm_startup(args_text)
+    instance_id = f"{os.environ['host_ip']}:{pid}"
+    return {
+        "instanceId": instance_id,
+        "pid": int(pid),
+        "catalinaBase": catalina_base,
+        "tomcatVersion": tomcat_version,
+        "javaVersion": java_version,
+        "jvmStartup": startup,
+        "httpPort": int(http_port),
+        "checks": [
+            {"id": "tomcat.instance.identity.present", "observedValue": instance_id, "evidence": "TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},
+            {"id": "tomcat.version.support", "observedValue": tomcat_version, "evidence": "TOMCAT_INSPECTOR_TOMCAT_VERSION"},
+            {"id": "tomcat.java.version.present", "observedValue": java_version, "evidence": "TOMCAT_INSPECTOR_JAVA_VERSION"},
+            {"id": "tomcat.jvm.xms.present", "observedValue": startup["xms"], "evidence": "TOMCAT_INSPECTOR_JVM_ARGS"},
+            {"id": "tomcat.jvm.xmx.present", "observedValue": startup["xmx"], "evidence": "TOMCAT_INSPECTOR_JVM_ARGS"},
+            {"id": "tomcat.jvm.gc.present", "observedValue": startup["gc"], "evidence": "TOMCAT_INSPECTOR_JVM_ARGS"},
+            {"id": "tomcat.jvm.gc-log.present", "observedValue": startup["gcLog"], "evidence": "TOMCAT_INSPECTOR_JVM_ARGS"},
+            {"id": "tomcat.http.port.present", "observedValue": int(http_port), "evidence": "TOMCAT_INSPECTOR_HTTP_PORT"},
+        ],
+    }
+
+
+def parse_discovery(value):
+    results = []
+    for entry in filter(None, value.split(";")):
+        method, status, detail = entry.split(":", 2)
+        results.append({"method": method, "status": status, "detail": detail})
+    return results
+
+
+if "TOMCAT_INSPECTOR_INSTANCES" in os.environ:
+    instances = []
+    for entry in filter(None, os.environ["TOMCAT_INSPECTOR_INSTANCES"].split(";")):
+        instances.append(instance(*entry.split("|", 5)))
+else:
+    instances = [instance(
+        os.environ.get("TOMCAT_INSPECTOR_PID", "1"),
+        os.environ.get("TOMCAT_INSPECTOR_CATALINA_BASE", "/opt/tomcat"),
+        os.environ.get("TOMCAT_INSPECTOR_TOMCAT_VERSION", ""),
+        os.environ.get("TOMCAT_INSPECTOR_JAVA_VERSION", ""),
+        os.environ.get("TOMCAT_INSPECTOR_JVM_ARGS", ""),
+        os.environ.get("TOMCAT_INSPECTOR_HTTP_PORT", "8080"),
+    )]
+
+document = {
+    "middleware": "tomcat",
+    "protocolVersion": os.environ["protocol_version"],
+    "collectorVersion": os.environ["collector_version"],
+    "collectedAt": os.environ["collected_at"],
+    "host": {"hostname": os.environ["hostname_value"], "ip": os.environ["host_ip"]},
+    "discovery": parse_discovery(os.environ.get("TOMCAT_INSPECTOR_DISCOVERY", "configured-input:success:按显式采集参数发现实例")),
+    "instances": instances,
 }
-
-extract_jvm_fact() {
-  local key="$1"
-  python3 -c '
-import shlex,sys
-key=sys.argv[1]
-args=shlex.split(sys.stdin.read())
-value=""
-for arg in args:
-    if key == "xms" and arg.startswith("-Xms"):
-        value=arg[4:]
-    elif key == "xmx" and arg.startswith("-Xmx"):
-        value=arg[4:]
-    elif key == "gc" and arg.startswith("-XX:+Use") and arg.endswith("GC"):
-        value=arg[len("-XX:+Use"):-len("GC")] + "GC"
-    elif key == "gcLog" and arg.startswith("-Xlog:") and "file=" in arg:
-        value=arg.split("file=", 1)[1].split(":", 1)[0]
-print(value)
-' "$key"
-}
-
-json_escape() {
-  python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'
-}
-
-hostname_json=$(printf '%s' "$hostname_value" | json_escape)
-host_ip_json=$(printf '%s' "$host_ip" | json_escape)
-instance_id="${host_ip}:${pid_value}"
-instance_id_json=$(printf '%s' "$instance_id" | json_escape)
-catalina_base_json=$(printf '%s' "$catalina_base" | json_escape)
-tomcat_version_json=$(printf '%s' "$tomcat_version" | json_escape)
-java_version_json=$(printf '%s' "$java_version" | json_escape)
-jvm_source_json=$(printf '%s' "$jvm_source" | json_escape)
-jvm_args_json=$(printf '%s' "$jvm_args" | split_jvm_args)
-jvm_xms=$(printf '%s' "$jvm_args" | extract_jvm_fact xms)
-jvm_xmx=$(printf '%s' "$jvm_args" | extract_jvm_fact xmx)
-jvm_gc=$(printf '%s' "$jvm_args" | extract_jvm_fact gc)
-jvm_gc_log=$(printf '%s' "$jvm_args" | extract_jvm_fact gcLog)
-jvm_xms_json=$(printf '%s' "$jvm_xms" | json_escape)
-jvm_xmx_json=$(printf '%s' "$jvm_xmx" | json_escape)
-jvm_gc_json=$(printf '%s' "$jvm_gc" | json_escape)
-jvm_gc_log_json=$(printf '%s' "$jvm_gc_log" | json_escape)
-
-printf '%s\n' '===TOMCAT_INSPECTION_JSON_BEGIN==='
-printf '{'
-printf '"middleware":"tomcat",'
-printf '"protocolVersion":"%s",' "$protocol_version"
-printf '"collectorVersion":"%s",' "$collector_version"
-printf '"collectedAt":"%s",' "$collected_at"
-printf '"host":{"hostname":%s,"ip":%s},' "$hostname_json" "$host_ip_json"
-printf '"instances":[{'
-printf '"instanceId":%s,' "$instance_id_json"
-printf '"pid":%s,' "$pid_value"
-printf '"catalinaBase":%s,' "$catalina_base_json"
-printf '"tomcatVersion":%s,' "$tomcat_version_json"
-printf '"javaVersion":%s,' "$java_version_json"
-printf '"jvmStartup":{"source":%s,"trusted":%s,"args":%s,"xms":%s,"xmx":%s,"gc":%s,"gcLog":%s},' "$jvm_source_json" "$jvm_trusted" "$jvm_args_json" "$jvm_xms_json" "$jvm_xmx_json" "$jvm_gc_json" "$jvm_gc_log_json"
-printf '"httpPort":%s,' "$http_port"
-printf '"checks":['
-printf '{"id":"tomcat.instance.identity.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},' "$instance_id_json"
-printf '{"id":"tomcat.version.support","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},' "$tomcat_version_json"
-printf '{"id":"tomcat.java.version.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JAVA_VERSION"},' "$java_version_json"
-printf '{"id":"tomcat.jvm.xms.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JVM_ARGS"},' "$jvm_xms_json"
-printf '{"id":"tomcat.jvm.xmx.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JVM_ARGS"},' "$jvm_xmx_json"
-printf '{"id":"tomcat.jvm.gc.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JVM_ARGS"},' "$jvm_gc_json"
-printf '{"id":"tomcat.jvm.gc-log.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_JVM_ARGS"},' "$jvm_gc_log_json"
-printf '{"id":"tomcat.http.port.present","observedValue":%s,"evidence":"TOMCAT_INSPECTOR_HTTP_PORT"}' "$http_port"
-printf ']'
-printf '}]'
-printf '}\n'
-printf '%s\n' '===TOMCAT_INSPECTION_JSON_END==='
+print("===TOMCAT_INSPECTION_JSON_BEGIN===")
+print(json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+print("===TOMCAT_INSPECTION_JSON_END===")
+PY

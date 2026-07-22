@@ -99,6 +99,54 @@ test('collector process emits one bounded Tomcat log document for the controlled
   });
 });
 
+test('collector records all discovery path outcomes and multiple visible instances', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
+      TOMCAT_INSPECTOR_HOSTNAME: 'demo-host',
+      TOMCAT_INSPECTOR_HOST_IP: '192.0.2.10',
+      TOMCAT_INSPECTOR_DISCOVERY: 'procfs:success:发现 2 个实例;ps:restricted:只能查看当前用户进程;systemd:unavailable:systemctl 不可用',
+      TOMCAT_INSPECTOR_INSTANCES: '12345|/opt/tomcat-a|9.0.85|17.0.10|-Xms512m -Xmx1024m|8080;23456|/opt/tomcat-b|10.1.30|21.0.4|-Xms1g -Xmx2g|8180'
+    }
+  });
+
+  const document = parseCollectorOutput(output);
+  assert.deepEqual(document.discovery, [
+    { method: 'procfs', status: 'success', detail: '发现 2 个实例' },
+    { method: 'ps', status: 'restricted', detail: '只能查看当前用户进程' },
+    { method: 'systemd', status: 'unavailable', detail: 'systemctl 不可用' }
+  ]);
+  assert.deepEqual(document.instances.map(({ instanceId }) => instanceId), [
+    '192.0.2.10:12345',
+    '192.0.2.10:23456'
+  ]);
+  assert.deepEqual(document.instances.map(({ catalinaBase }) => catalinaBase), [
+    '/opt/tomcat-a',
+    '/opt/tomcat-b'
+  ]);
+});
+
+test('collector can report zero visible instances without claiming Tomcat is absent', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
+      TOMCAT_INSPECTOR_HOSTNAME: 'demo-host',
+      TOMCAT_INSPECTOR_HOST_IP: '192.0.2.10',
+      TOMCAT_INSPECTOR_DISCOVERY: 'procfs:success:当前用户未发现可见实例;ps:restricted:只能查看当前用户进程',
+      TOMCAT_INSPECTOR_INSTANCES: ''
+    }
+  });
+
+  const document = parseCollectorOutput(output);
+  assert.deepEqual(document.instances, []);
+  assert.equal(document.discovery[1].status, 'restricted');
+  assert.doesNotMatch(JSON.stringify(document), /主机不存在 Tomcat/);
+});
+
 test('collector script stays within the read-only collection boundary', () => {
   const script = readFileSync(scriptPath, 'utf8');
 
