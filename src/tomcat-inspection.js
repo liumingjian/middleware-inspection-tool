@@ -129,10 +129,11 @@ function validateLogTargets(targets, instancePath) {
   if (targets === undefined) return;
   if (!Array.isArray(targets)) rejectLog('DOCUMENT_SCHEMA_INVALID', `${instancePath}.logTargets`, '日志配置与文件状态事实结构无效。');
   const statuses = ['success', 'restricted', 'unavailable', 'unreliable'];
+  const targetIds = new Set();
   targets.forEach((target, index) => {
     const path = `${instancePath}.logTargets[${index}]`;
     if (!target || typeof target !== 'object' || Array.isArray(target)
-      || typeof target.id !== 'string' || !target.id
+      || typeof target.id !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(target.id)
       || !target.configuration || typeof target.configuration !== 'object' || Array.isArray(target.configuration)
       || !statuses.includes(target.configuration.status)
       || typeof target.configuration.source !== 'string' || !target.configuration.source
@@ -141,6 +142,10 @@ function validateLogTargets(targets, instancePath) {
       || typeof target.fileMetadata.source !== 'string' || !target.fileMetadata.source) {
       rejectLog('DOCUMENT_SCHEMA_INVALID', path, '日志配置与文件状态事实结构无效。');
     }
+    if (targetIds.has(target.id)) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', `${path}.id`, '日志配置与文件状态事实标识必须稳定且唯一。');
+    }
+    targetIds.add(target.id);
     const configurationKeys = target.configuration.status === 'success' ? ['status', 'source', 'targetPath'] : ['status', 'source'];
     if (Object.keys(target.configuration).some((key) => !configurationKeys.includes(key))
       || (target.configuration.status === 'success' && (typeof target.configuration.targetPath !== 'string' || !target.configuration.targetPath))) {

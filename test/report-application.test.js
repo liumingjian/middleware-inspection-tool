@@ -595,6 +595,24 @@ test('report rejects unbounded or guessed log target facts at the boundary', asy
   }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[0].configuration');
 });
 
+test('report rejects duplicate or non-stable log target identifiers at the boundary', async () => {
+  const logTarget = {
+    id: 'catalina-file',
+    configuration: { status: 'success', source: 'logging.properties:1', targetPath: '/var/log/tomcat/catalina.log' },
+    fileMetadata: { status: 'success', source: 'stat:/var/log/tomcat/catalina.log', fileType: 'regular-file', sizeBytes: 10, modifiedAt: '2026-07-21T00:00:00Z' }
+  };
+
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets: [logTarget, { ...logTarget }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[1].id');
+
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets: [{ ...logTarget, id: 'catalina-file | injected row' }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[0]');
+});
+
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {
   await assert.rejects(
     generateTomcatMarkdownReport({ pastedLogCarrier: sampleLog }),
