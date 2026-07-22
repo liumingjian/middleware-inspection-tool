@@ -247,7 +247,7 @@ test('collector emits only bounded Tomcat security facts and redacts sensitive J
     env: {
       ...process.env,
       TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
-      TOMCAT_INSPECTOR_JVM_ARGS: '-Xmx1g -Ddb.password=top-secret -DapiToken=token-value -Dcookie=session-value -Dauthorization=Bearer-secret -Djavax.net.ssl.keyStorePassword=key-secret -Ddb.url=jdbc:mysql://db/app?user=alice&password=url-secret',
+      TOMCAT_INSPECTOR_JVM_ARGS: '-Xmx1g -Ddb.password=top-secret -DapiToken=token-value -DapiKey=key-value -Daws.accessKeyId=access-key-value -Dcookie=session-value -Dauthorization=Bearer-secret -Djavax.net.ssl.keyStorePassword=key-secret -Ddb.url=jdbc:mysql://db/app?user=alice&password=url-secret',
       TOMCAT_INSPECTOR_SECURITY_STATUS: 'success',
       TOMCAT_INSPECTOR_DIRECTORY_LISTING_ENABLED: 'false',
       TOMCAT_INSPECTOR_AUTO_DEPLOY_ENABLED: 'true',
@@ -258,12 +258,14 @@ test('collector emits only bounded Tomcat security facts and redacts sensitive J
     }
   });
 
-  assert.doesNotMatch(output, /top-secret|token-value|session-value|Bearer-secret|key-secret|url-secret|must-not-appear/);
+  assert.doesNotMatch(output, /top-secret|token-value|key-value|access-key-value|session-value|Bearer-secret|key-secret|url-secret|must-not-appear/);
   const instance = parseCollectorOutput(output).instances[0];
   assert.deepEqual(instance.jvmStartup.args, [
     '-Xmx1g',
     '-Ddb.password=[REDACTED]',
     '-DapiToken=[REDACTED]',
+    '-DapiKey=[REDACTED]',
+    '-Daws.accessKeyId=[REDACTED]',
     '-Dcookie=[REDACTED]',
     '-Dauthorization=[REDACTED]',
     '-Djavax.net.ssl.keyStorePassword=[REDACTED]',

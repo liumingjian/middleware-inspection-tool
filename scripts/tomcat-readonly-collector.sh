@@ -58,7 +58,7 @@ jvm_gc_log() {
 
 redact_jvm_arg() {
   local arg="$1" lower="${1,,}"
-  if [[ "$lower" == *=* && "$lower" =~ (password|passwd|secret|token|cookie|authorization|credential|keystorepass|keypass|jdbc:) ]]; then
+  if [[ "$lower" == *=* && "$lower" =~ (password|passwd|secret|token|cookie|authorization|credential|keystorepass|keypass|apikey|api-key|accesskey|access-key|jdbc:) ]]; then
     printf '%s=[REDACTED]' "${arg%%=*}"
   else
     printf '%s' "$arg"
