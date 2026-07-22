@@ -194,14 +194,26 @@ function validateHostResources(host) {
       rejectLog('DOCUMENT_SCHEMA_INVALID', path, '主机资源事实结构无效。');
     }
     if (fact.status === 'success' && (!Number.isFinite(fact.total) || fact.total <= 0
-      || !Number.isFinite(fact.available) || fact.available < 0
+      || !Number.isFinite(fact.available) || fact.available < 0 || fact.available > fact.total
       || !Number.isFinite(fact.usedPercent) || fact.usedPercent < 0 || fact.usedPercent > 100
       || (kind !== 'memory' && (typeof fact.mount !== 'string' || !fact.mount)))) {
       rejectLog('DOCUMENT_SCHEMA_INVALID', path, '主机资源事实结构无效。');
     }
   }
-  if (host.observations !== undefined && !Array.isArray(host.observations)) {
-    rejectLog('DOCUMENT_SCHEMA_INVALID', 'host.observations', '主机资源观察指标结构无效。');
+  if (host.observations !== undefined) {
+    if (!Array.isArray(host.observations)) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', 'host.observations', '主机资源观察指标结构无效。');
+    }
+    for (const [index, observation] of host.observations.entries()) {
+      if (!observation || typeof observation !== 'object' || Array.isArray(observation)
+        || typeof observation.id !== 'string' || !observation.id
+        || !['success', 'restricted', 'unavailable', 'unreliable'].includes(observation.status)
+        || typeof observation.source !== 'string' || !observation.source
+        || typeof observation.unit !== 'string' || !observation.unit
+        || (observation.status === 'success' && !Number.isFinite(observation.value))) {
+        rejectLog('DOCUMENT_SCHEMA_INVALID', `host.observations[${index}]`, '主机资源观察指标结构无效。');
+      }
+    }
   }
 }
 
@@ -268,7 +280,13 @@ ${rows.filter(({ domain }) => domain !== 'host-resources').map(({ id, conclusion
 }
 
 function buildHostResourceChecks(resources) {
-  if (!resources) return [];
+  if (!resources) {
+    return [
+      missingResourceCheck('host.disk.capacity', 'df -Pk /opt'),
+      missingResourceCheck('host.inode.capacity', 'df -Pi /opt'),
+      missingResourceCheck('host.memory.available', '/proc/meminfo:MemAvailable')
+    ];
+  }
   return [
     capacityCheck(resources.disk, {
       id: 'host.disk.capacity',
@@ -328,6 +346,16 @@ function unknownResourceCheck(fact, id) {
     domain: 'host-resources',
     conclusion: '无法判断',
     evidence: `采集状态：${fact.status}；来源：${fact.source}`,
+    suggestion: '补充满足可靠口径的容量事实后人工核查。'
+  };
+}
+
+function missingResourceCheck(id, source) {
+  return {
+    id,
+    domain: 'host-resources',
+    conclusion: '无法判断',
+    evidence: `采集状态：unavailable；来源：${source}`,
     suggestion: '补充满足可靠口径的容量事实后人工核查。'
   };
 }

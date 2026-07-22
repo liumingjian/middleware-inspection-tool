@@ -287,6 +287,50 @@ test('report generation marks applicable host capacity checks unknown when minim
   assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
 });
 
+test('report generation marks missing host resource facts unknown instead of omitting applicable checks', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({})
+  });
+
+  assert.deepEqual(result.reports[0].hostResourceChecks.map(({ id, conclusion }) => ({ id, conclusion })), [
+    { id: 'host.disk.capacity', conclusion: '无法判断' },
+    { id: 'host.inode.capacity', conclusion: '无法判断' },
+    { id: 'host.memory.available', conclusion: '无法判断' }
+  ]);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+});
+
+test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
+  const invalidHosts = [
+    {
+      resources: {
+        disk: { status: 'success', source: 'df', unit: 'bytes', mount: '/opt', total: 1000, available: 1001, usedPercent: 0 },
+        inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+        memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+      },
+      observations: []
+    },
+    {
+      resources: {
+        disk: { status: 'unavailable', source: 'df', unit: 'bytes' },
+        inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+        memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+      },
+      observations: [{ id: 'host.cpu.instantaneous', status: 'success', source: 'snapshot', unit: 'percent' }]
+    }
+  ];
+  for (const host of invalidHosts) {
+    await assert.rejects(
+      generateTomcatMarkdownReport({
+        selectedMiddleware: 'tomcat',
+        pastedLogCarrier: buildCarrier({}, { host: { hostname: 'demo-host', ip: '192.0.2.10', ...host } })
+      }),
+      (error) => error.code === 'DOCUMENT_SCHEMA_INVALID'
+    );
+  }
+});
+
 test('report generation rejects malformed host resource facts at the report boundary', async () => {
   await assert.rejects(
     generateTomcatMarkdownReport({
