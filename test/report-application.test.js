@@ -246,7 +246,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
     normal: 9,
     warning: 1,
     abnormal: 1,
-    unknown: 0,
+    unknown: 1,
     notApplicable: 0
   });
   assert.deepEqual(result.reports[0].hostResourceChecks, [
@@ -256,7 +256,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
   ]);
   const markdown = result.reports[0].markdown;
   assert.match(markdown, /## 结论摘要/);
-  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：0；不适用：0/);
+  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：1；不适用：0/);
   assert.match(markdown, /## 主机资源域/);
   assert.match(markdown, /host\.disk\.capacity \| 异常/);
   assert.match(markdown, /## 观察指标（不参与结论计数）/);
@@ -282,7 +282,7 @@ test('report generation marks applicable host capacity checks unknown when minim
   });
 
   assert.deepEqual(result.reports[0].hostResourceChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
   assert.match(result.reports[0].markdown, /host\.memory\.available \| 无法判断 \| 采集状态：unreliable；来源：\/proc\/meminfo:MemAvailable/);
   assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
 });
@@ -298,7 +298,7 @@ test('report generation marks missing host resource facts unknown instead of omi
     { id: 'host.inode.capacity', conclusion: '无法判断' },
     { id: 'host.memory.available', conclusion: '无法判断' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
 });
 
 test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
@@ -349,6 +349,29 @@ test('report generation rejects malformed host resource facts at the report boun
       })
     }),
     (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'host.resources.disk'
+  );
+});
+
+test('report marks uncollected Connector configuration unknown instead of omitting the domain', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ connectors: [] })
+  });
+
+  assert.deepEqual(result.reports[0].connectorChecks.map(({ id, conclusion, semantics }) => ({ id, conclusion, semantics })), [
+    { id: 'tomcat.connector.configuration', conclusion: '无法判断', semantics: 'minimum-evidence' }
+  ]);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
+  assert.match(result.reports[0].markdown, /采集状态：unavailable；证据：未采集 Connector 配置事实/);
+});
+
+test('report rejects invalid host CPU capacity facts at the boundary', async () => {
+  await assert.rejects(
+    generateTomcatMarkdownReport({
+      selectedMiddleware: 'tomcat',
+      pastedLogCarrier: buildCarrier({}, { host: { hostname: 'demo-host', ip: '192.0.2.10', cpuCount: 0 } })
+    }),
+    (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'host.cpuCount'
   );
 });
 

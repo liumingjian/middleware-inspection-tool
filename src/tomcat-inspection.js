@@ -189,6 +189,9 @@ function parseBoundedLog(carrier) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'host', '巡检日志顶层结构无效。');
   }
   validateHostResources(document.host);
+  if (document.host.cpuCount !== undefined && (!Number.isInteger(document.host.cpuCount) || document.host.cpuCount <= 0)) {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'host.cpuCount', '主机 CPU 核数事实无效。');
+  }
   if (!Array.isArray(document.discovery) || document.discovery.length === 0) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'discovery', '巡检日志实例发现结果无效。');
   }
@@ -314,10 +317,24 @@ ${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool'].inclu
 }
 
 function buildConnectorChecks(connectors, cpuCount) {
-  if (!connectors || connectors.length === 0) return [];
+  if (!connectors || connectors.length === 0) {
+    return [connectorCheck(
+      'tomcat.connector.configuration',
+      '无法判断',
+      'minimum-evidence',
+      '采集状态：unavailable；证据：未采集 Connector 配置事实',
+      '补充可读且完整的 server.xml 配置事实后人工核查。'
+    )];
+  }
   if (connectors.some(({ status }) => status !== 'success')) {
     const degraded = connectors.find(({ status }) => status !== 'success');
-    return [{ id: 'tomcat.connector.configuration', domain: 'connector-thread-pool', conclusion: '无法判断', semantics: 'minimum-evidence', evidence: `采集状态：${degraded.status}；证据：${degraded.evidence}`, suggestion: '补充可读且完整的 server.xml 配置事实后人工核查。' }];
+    return [connectorCheck(
+      'tomcat.connector.configuration',
+      '无法判断',
+      'minimum-evidence',
+      `采集状态：${degraded.status}；证据：${degraded.evidence}`,
+      '补充可读且完整的 server.xml 配置事实后人工核查。'
+    )];
   }
   return connectors.flatMap((connector) => {
     const facts = connectorEvidence(connector);

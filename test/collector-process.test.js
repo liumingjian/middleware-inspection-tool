@@ -22,6 +22,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
       TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
       TOMCAT_INSPECTOR_HOSTNAME: 'demo-host',
       TOMCAT_INSPECTOR_HOST_IP: '192.0.2.10',
+      TOMCAT_INSPECTOR_CPU_COUNT: '8',
       TOMCAT_INSPECTOR_PID: '12345',
       TOMCAT_INSPECTOR_CATALINA_BASE: '/opt/tomcat-demo',
       TOMCAT_INSPECTOR_TOMCAT_VERSION: '9.0.85',
@@ -41,6 +42,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
   assert.equal(document.collectedAt, '2026-07-21T00:00:00Z');
   assert.equal(document.host.hostname, 'demo-host');
   assert.equal(document.host.ip, '192.0.2.10');
+  assert.equal(document.host.cpuCount, 8);
   assert.deepEqual(document.host.resources, {
     disk: { status: 'unavailable', source: 'df -Pk /opt', unit: 'bytes' },
     inode: { status: 'unavailable', source: 'df -Pi /opt', unit: 'inodes' },
@@ -117,11 +119,14 @@ test('collector structures visible Connector and thread-pool configuration facts
       ...process.env,
       TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
       TOMCAT_INSPECTOR_HOST_IP: '192.0.2.10',
+      TOMCAT_INSPECTOR_CPU_COUNT: '8',
       TOMCAT_INSPECTOR_CONNECTORS: 'success|server.xml|HTTP/1.1|8080|explicit|shared-http|200|reference|100|version-default|20000|explicit;restricted|server.xml||||||||||'
     }
   });
 
-  assert.deepEqual(parseCollectorOutput(output).instances[0].connectors, [
+  const document = parseCollectorOutput(output);
+  assert.equal(document.host.cpuCount, 8);
+  assert.deepEqual(document.instances[0].connectors, [
     {
       status: 'success',
       evidence: 'server.xml',

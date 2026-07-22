@@ -127,6 +127,16 @@ emit_capacity_fact() {
   printf '}'
 }
 
+resolve_cpu_count() {
+  local cpu_count="${TOMCAT_INSPECTOR_CPU_COUNT:-}"
+  if [[ -z "$cpu_count" ]] && command -v getconf >/dev/null 2>&1; then
+    cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  if [[ "$cpu_count" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s' "$cpu_count"
+  fi
+}
+
 emit_host_resources() {
   local disk_result inode_result memory_result disk_status inode_status memory_status
   local disk_value inode_value memory_value
@@ -259,6 +269,8 @@ printf ',"collectorVersion":'; json_string "$collector_version"
 printf ',"collectedAt":'; json_string "$collected_at"
 printf ',"host":{"hostname":'; json_string "$hostname_value"
 printf ',"ip":'; json_string "$host_ip"
+cpu_count=$(resolve_cpu_count)
+if [[ -n "$cpu_count" ]]; then printf ',"cpuCount":%s' "$cpu_count"; fi
 printf ',"resources":'; emit_host_resources
 printf ',"observations":'; emit_observations
 printf '},"discovery":'
