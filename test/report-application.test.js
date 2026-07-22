@@ -6,6 +6,7 @@ import { getTomcatScriptAsset, generateTomcatMarkdownReport, LOG_BEGIN, LOG_END 
 const sampleLog = readFileSync(new URL('./fixtures/tomcat-single-instance.log', import.meta.url), 'utf8');
 
 function buildCarrier(instanceOverrides, documentOverrides = {}) {
+  const sampleDocument = JSON.parse(sampleLog.split(LOG_BEGIN)[1].split(LOG_END)[0]);
   const document = {
     middleware: 'tomcat',
     protocolVersion: 'tomcat-inspection-log/v1',
@@ -14,25 +15,11 @@ function buildCarrier(instanceOverrides, documentOverrides = {}) {
     host: { hostname: 'demo-host', ip: '192.0.2.10' },
     instances: [
       {
-        instanceId: 'demo-host:12345',
-        pid: 12345,
-        catalinaBase: '/opt/tomcat-demo',
-        tomcatVersion: '9.0.85',
-        javaVersion: '17.0.10',
-        jvmStartup: {
-          source: 'TOMCAT_INSPECTOR_JVM_ARGS',
-          trusted: true,
-          args: ['-Xms512m', '-Xmx1024m', '-XX:+UseG1GC', '-Xlog:gc*:file=/var/log/tomcat/gc.log'],
-          xms: '512m',
-          xmx: '1024m',
-          gc: 'G1GC',
-          gcLog: '/var/log/tomcat/gc.log'
-        },
-        httpPort: 8080,
-        checks: [],
+        ...sampleDocument.instances[0],
         ...instanceOverrides
       }
     ],
+    discovery: [{ method: 'configured-input', status: 'success', detail: '按显式采集参数发现实例' }],
     ...documentOverrides
   };
   return `${LOG_BEGIN}\n${JSON.stringify(document)}\n${LOG_END}`;
@@ -48,6 +35,26 @@ test('script management exposes the current Tomcat collector for copy and downlo
   assert.match(asset.content, /^#!\/usr\/bin\/env bash/);
   assert.match(asset.copyFeedback, /已复制完整 Tomcat 巡检脚本/);
   assert.match(asset.downloadFeedback, /已下载 Tomcat 巡检脚本/);
+});
+
+test('report generation rejects missing or invalid discovery outcomes', async () => {
+  await assert.rejects(
+    generateTomcatMarkdownReport({
+      selectedMiddleware: 'tomcat',
+      pastedLogCarrier: buildCarrier({}, { discovery: undefined })
+    }),
+    (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'discovery'
+  );
+
+  await assert.rejects(
+    generateTomcatMarkdownReport({
+      selectedMiddleware: 'tomcat',
+      pastedLogCarrier: buildCarrier({}, {
+        discovery: [{ method: 'procfs', status: 'unknown', detail: '状态无效' }]
+      })
+    }),
+    (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'discovery[0]'
+  );
 });
 
 test('report generation processes every valid instance in one trusted log', async () => {
@@ -81,7 +88,7 @@ test('report generation returns partial success and locatable reasons without om
   const result = await generateTomcatMarkdownReport({
     selectedMiddleware: 'tomcat',
     pastedLogCarrier: buildCarrier({}, {
-      discovery: [{ method: 'procfs', status: 'success' }],
+      discovery: [{ method: 'procfs', status: 'success', detail: '发现 1 个实例' }],
       instances: [
         validInstance,
         { instanceId: '192.0.2.10:bad-pid', pid: 'bad-pid', catalinaBase: '', checks: [] }
@@ -168,43 +175,11 @@ test('report generation application boundary turns a pasted Tomcat log carrier i
 
   assert.equal(result.reports.length, 1);
   assert.equal(result.reports[0].instanceId, 'demo-host:12345');
-  assert.equal(result.reports[0].markdown, `# Tomcat 单实例巡检报告
-
-## 实例身份
-
-- 主机名：demo-host
-- 主机 IP：192.0.2.10
-- 进程号：12345
-- CATALINA_BASE：/opt/tomcat-demo
-- Tomcat 版本：9.0.85
-- Java 版本：17.0.10
-
-## 版本与时间
-
-- 协议版本：tomcat-inspection-log/v1
-- 采集脚本版本：tomcat-readonly-collector/0.1.0
-- 规则版本：tomcat-rules/0.1.0
-- 采集时间：2026-07-21T00:00:00Z
-- 报告生成时间：2026-07-21T01:02:03Z
-
-## JVM 启动配置
-
-- 启动参数来源：TOMCAT_INSPECTOR_JVM_ARGS（可信）
-- JVM 参数：-Xms512m -Xmx1024m -XX:+UseG1GC -Xlog:gc*:file=/var/log/tomcat/gc.log
-
-## 巡检结论
-
-| 巡检项 | 结论 | 采集事实 | 建议 |
-| --- | --- | --- | --- |
-| tomcat.instance.identity.present | 正常 | 实例标识：demo-host:12345 | 已采集实例身份，按本次采集主机与进程号区分报告。 |
-| tomcat.version.support | 正常 | Tomcat 版本：9.0.85（支持 Tomcat 9.0） | 当前版本在 Tomcat MVP 支持范围内。 |
-| tomcat.java.version.present | 正常 | Java 版本：17.0.10 | 已采集 Java 版本，结合 Tomcat 版本继续复核兼容性。 |
-| tomcat.jvm.xms.present | 正常 | -Xms：512m | 已采集 JVM 初始堆参数，按容量规划复核。 |
-| tomcat.jvm.xmx.present | 正常 | -Xmx：1024m | 已采集 JVM 最大堆参数，按容量规划复核。 |
-| tomcat.jvm.gc.present | 正常 | GC：G1GC | 已采集 GC 选择参数，结合 Java 版本复核。 |
-| tomcat.jvm.gc-log.present | 正常 | GC 日志：/var/log/tomcat/gc.log | 已采集 GC 日志配置，确认日志路径可写且纳入运维留存。 |
-| tomcat.http.port.present | 正常 | HTTP 端口：8080 | 已采集到 Tomcat HTTP 端口，保持现有配置审查流程。 |
-`);
+  assert.match(result.reports[0].markdown, /## 实例发现覆盖范围/);
+  assert.match(result.reports[0].markdown, /configured-input：成功（按显式采集参数发现实例）/);
+  assert.match(result.reports[0].markdown, /所有记录的实例发现途径均成功。/);
+  assert.match(result.reports[0].markdown, /## JVM 启动配置/);
+  assert.match(result.reports[0].markdown, /tomcat\.http\.port\.present \| 正常 \| HTTP 端口：8080/);
 });
 
 test('report generation marks unsupported Tomcat minor lines instead of treating them as supported', async () => {

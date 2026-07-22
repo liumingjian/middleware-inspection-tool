@@ -48,8 +48,8 @@ export async function generateTomcatMarkdownReport({
 
   const carrier = uploadedFile ? uploadedFile.content.toString('utf8') : pastedLogCarrier;
   const document = parseBoundedLog(carrier);
-  const discovery = document.discovery ?? [];
-  const discoveryComplete = discovery.length > 0 && discovery.every(({ status }) => status === 'success');
+  const discovery = document.discovery;
+  const discoveryComplete = discovery.every(({ status }) => status === 'success');
   const reports = [];
   const invalidInstances = [];
   document.instances.forEach((instance, index) => {
@@ -155,6 +155,17 @@ function parseBoundedLog(carrier) {
   }
   if (!document.host || typeof document.host !== 'object' || Array.isArray(document.host)) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'host', '巡检日志顶层结构无效。');
+  }
+  if (!Array.isArray(document.discovery) || document.discovery.length === 0) {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', 'discovery', '巡检日志实例发现结果无效。');
+  }
+  for (const [index, discovery] of document.discovery.entries()) {
+    if (!discovery || typeof discovery !== 'object' || Array.isArray(discovery)
+      || typeof discovery.method !== 'string' || !discovery.method
+      || !['success', 'restricted', 'unavailable'].includes(discovery.status)
+      || typeof discovery.detail !== 'string') {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', `discovery[${index}]`, '巡检日志实例发现结果无效。');
+    }
   }
   if (!Array.isArray(document.instances)) {
     rejectLog('DOCUMENT_SCHEMA_INVALID', 'instances', '巡检日志顶层结构无效。');
