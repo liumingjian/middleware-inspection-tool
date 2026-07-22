@@ -246,7 +246,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
     normal: 9,
     warning: 1,
     abnormal: 1,
-    unknown: 2,
+    unknown: 3,
     notApplicable: 0
   });
   assert.deepEqual(result.reports[0].hostResourceChecks, [
@@ -256,7 +256,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
   ]);
   const markdown = result.reports[0].markdown;
   assert.match(markdown, /## 结论摘要/);
-  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：2；不适用：0/);
+  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：3；不适用：0/);
   assert.match(markdown, /## 主机资源域/);
   assert.match(markdown, /host\.disk\.capacity \| 异常/);
   assert.match(markdown, /## 观察指标（不参与结论计数）/);
@@ -282,7 +282,7 @@ test('report generation marks applicable host capacity checks unknown when minim
   });
 
   assert.deepEqual(result.reports[0].hostResourceChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 6);
   assert.match(result.reports[0].markdown, /host\.memory\.available \| 无法判断 \| 采集状态：unreliable；来源：\/proc\/meminfo:MemAvailable/);
   assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
 });
@@ -298,7 +298,7 @@ test('report generation marks missing host resource facts unknown instead of omi
     { id: 'host.inode.capacity', conclusion: '无法判断' },
     { id: 'host.memory.available', conclusion: '无法判断' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 6);
 });
 
 test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
@@ -361,7 +361,7 @@ test('report marks uncollected Connector configuration unknown instead of omitti
   assert.deepEqual(result.reports[0].connectorChecks.map(({ id, conclusion, semantics }) => ({ id, conclusion, semantics })), [
     { id: 'tomcat.connector.configuration', conclusion: '无法判断', semantics: 'minimum-evidence' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 6);
   assert.match(result.reports[0].markdown, /采集状态：unavailable；证据：未采集 Connector 配置事实/);
 });
 
@@ -514,7 +514,6 @@ test('report renders deterministic deployment inventory checks and Markdown with
   });
 
   assert.deepEqual(result.reports[0].deploymentChecks.map(({ id, conclusion }) => ({ id, conclusion })), [
-    { id: 'tomcat.application.deployment.inventory', conclusion: '正常' },
     { id: 'tomcat.application.deployment.inventory', conclusion: '正常' }
   ]);
   const markdown = result.reports[0].markdown;
@@ -536,7 +535,7 @@ test('report degrades deployment facts independently and preserves coverage limi
     pastedLogCarrier: buildCarrier({ deployments })
   });
 
-  assert.deepEqual(result.reports[0].deploymentChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
+  assert.deepEqual(result.reports[0].deploymentChecks.map(({ conclusion }) => conclusion), ['无法判断']);
   assert.match(result.reports[0].markdown, /采集状态：restricted；来源：inventory:\/secure\/webapps/);
   assert.match(result.reports[0].markdown, /应用部署清单可能不完整/);
 });

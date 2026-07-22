@@ -63,7 +63,6 @@ export async function generateTomcatMarkdownReport({
     const securityChecks = buildSecurityChecks(instance.securityConfig);
     const deploymentChecks = buildDeploymentChecks(instance.deployments);
     const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks];
-    const countableRows = instance.deployments === undefined ? checkRows.filter(({ domain }) => domain !== 'application-deployment') : checkRows;
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
@@ -71,8 +70,8 @@ export async function generateTomcatMarkdownReport({
       connectorChecks,
       securityChecks,
       deploymentChecks,
-      conclusionSummary: summarizeConclusions(countableRows),
-      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows, countableRows)
+      conclusionSummary: summarizeConclusions(checkRows),
+      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
     });
   });
 
@@ -305,8 +304,8 @@ function renderDiscoveryCoverage(discovery, discoveryComplete) {
   return `## 实例发现覆盖范围\n\n${lines.join('\n')}\n\n${limitation}\n\n`;
 }
 
-function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows, countableRows = rows) {
-  const summary = summarizeConclusions(countableRows);
+function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows) {
+  const summary = summarizeConclusions(rows);
   const jvmSource = instance.jvmStartup?.source ?? '未采集';
   const jvmTrust = instance.jvmStartup?.trusted ? '可信' : '不可信';
   const jvmArgs = Array.isArray(instance.jvmStartup?.args) && instance.jvmStartup.args.length > 0
@@ -380,34 +379,32 @@ ${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'stat
 }
 
 function buildDeploymentChecks(deployments) {
+  const id = 'tomcat.application.deployment.inventory';
   if (!deployments || deployments.length === 0) {
     return [{
-      id: 'tomcat.application.deployment.inventory',
+      id,
       domain: 'application-deployment',
       conclusion: '无法判断',
       evidence: '采集状态：unavailable；来源：deployment-inventory；未采集可见应用部署事实',
       suggestion: '补充可读的部署目录与容器上下文配置事实后人工核查；应用部署清单可能不完整。'
     }];
   }
-  return deployments.map((deployment) => {
-    if (deployment.status !== 'success') {
-      return {
-        id: 'tomcat.application.deployment.inventory',
-        domain: 'application-deployment',
-        conclusion: '无法判断',
-        evidence: `采集状态：${deployment.status}；来源：${deployment.source}`,
-        suggestion: '补充该部署来源的可见性后人工核查；应用部署清单可能不完整。'
-      };
-    }
+
+  const evidence = deployments.map((deployment) => {
+    if (deployment.status !== 'success') return `采集状态：${deployment.status}；来源：${deployment.source}`;
     const config = deployment.containerConfig;
-    return {
-      id: 'tomcat.application.deployment.inventory',
-      domain: 'application-deployment',
-      conclusion: '正常',
-      evidence: `应用：${deployment.applicationName}；路径：${deployment.deploymentPath}；形态：${deployment.deploymentType}；上下文路径：${config.contextPath || '/'}；reloadable：${config.reloadable}；deployOnStartup：${config.deployOnStartup}；unpackWARs：${config.unpackWARs}；来源：${deployment.source}`,
-      suggestion: '已记录巡检复核所需的最小部署与容器配置事实；结合发布记录人工复核。'
-    };
-  });
+    return `应用：${deployment.applicationName}；路径：${deployment.deploymentPath}；形态：${deployment.deploymentType}；上下文路径：${config.contextPath || '/'}；reloadable：${config.reloadable}；deployOnStartup：${config.deployOnStartup}；unpackWARs：${config.unpackWARs}；来源：${deployment.source}`;
+  }).join('；\n');
+  const complete = deployments.every(({ status }) => status === 'success');
+  return [{
+    id,
+    domain: 'application-deployment',
+    conclusion: complete ? '正常' : '无法判断',
+    evidence,
+    suggestion: complete
+      ? '已记录巡检复核所需的最小部署与容器配置事实；结合发布记录人工复核。'
+      : '补充不可见部署来源的事实后人工核查；应用部署清单可能不完整。'
+  }];
 }
 
 function buildSecurityChecks(config) {
