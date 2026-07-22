@@ -80,6 +80,42 @@ for (const version of versions) {
   });
 }
 
+test('controlled collector facts exercise all conclusion categories and bounded evidence', async () => {
+  const carrier = collect({
+    TOMCAT_INSPECTOR_DISCOVERY: 'procfs:success:发现可见实例',
+    TOMCAT_INSPECTOR_TOMCAT_VERSION: '9.0.85',
+    TOMCAT_INSPECTOR_JAVA_VERSION: '17.0.10',
+    TOMCAT_INSPECTOR_JVM_ARGS: '-Xms512m -Xmx1g -XX:+UseG1GC -Xlog:gc*:file=/var/log/tomcat/gc.log',
+    TOMCAT_INSPECTOR_DISK_STATUS: 'success',
+    TOMCAT_INSPECTOR_INODE_STATUS: 'success',
+    TOMCAT_INSPECTOR_MEMORY_STATUS: 'success',
+    TOMCAT_INSPECTOR_DISK_FACT: '/opt|107374182400|21474836480|80',
+    TOMCAT_INSPECTOR_INODE_FACT: '/opt|1000000|50000|95',
+    TOMCAT_INSPECTOR_MEMORY_FACT: '8589934592|429496729|95',
+    TOMCAT_INSPECTOR_CPU_OBSERVATION: '23.5',
+    TOMCAT_INSPECTOR_CONNECTORS: 'success|server.xml:69|HTTP/1.1|8080|explicit|shared-http|200|reference|100|version-default|20000|explicit',
+    TOMCAT_INSPECTOR_SECURITY_STATUS: 'success',
+    TOMCAT_INSPECTOR_DIRECTORY_LISTING_ENABLED: 'true',
+    TOMCAT_INSPECTOR_AUTO_DEPLOY_ENABLED: 'true',
+    TOMCAT_INSPECTOR_SERVER_INFO_EXPOSED: 'false',
+    TOMCAT_INSPECTOR_SHUTDOWN_PORT: '-1',
+    TOMCAT_INSPECTOR_TLS_CONNECTOR_PRESENT: 'false',
+    TOMCAT_INSPECTOR_DEPLOYMENTS: 'success|inventory:/opt/tomcat/webapps|orders|/opt/tomcat/webapps/orders|exploded-directory|/orders|false|true|true',
+    TOMCAT_INSPECTOR_LOG_TARGETS: 'catalina-file|success|logging.properties:1|/var/log/tomcat/catalina.log|success|stat:/var/log/tomcat/catalina.log|regular-file|1048576|2026-07-22T00:00:00Z;access-log|restricted|server.xml:Host|-|unavailable|stat:/secure/access.log|-|-|-'
+  });
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: carrier,
+    generatedAt: '2026-07-22T00:01:00Z'
+  });
+  const report = result.reports[0];
+
+  assert.equal(result.status, 'success');
+  assert.ok(Object.values(report.conclusionSummary).every((count) => count > 0));
+  assert.match(report.markdown, /显式值|Tomcat 版本默认值/);
+  assert.match(report.markdown, /观察指标（不参与结论计数）/);
+});
+
 test('real multi-instance collector output supports revision, one DOCX, and an all-instance ZIP', async () => {
   const carrier = collect({
     TOMCAT_INSPECTOR_INSTANCES: '24001|/opt/tomcat-a|9.0.85|17.0.10|-Xms512m -Xmx1g|8080;24002|/opt/tomcat-b|10.1.30|21.0.4|-Xms1g -Xmx2g|8180'
