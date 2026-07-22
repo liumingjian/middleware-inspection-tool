@@ -222,6 +222,29 @@ emit_security_config() {
   printf '}'
 }
 
+emit_deployments() {
+  local entry status source application_name deployment_path deployment_type context_path reloadable deploy_on_startup unpack_wars first=true
+  printf '['
+  IFS=';' read -r -a entries <<< "${TOMCAT_INSPECTOR_DEPLOYMENTS:-}"
+  for entry in "${entries[@]}"; do
+    [[ -z "$entry" ]] && continue
+    IFS='|' read -r status source application_name deployment_path deployment_type context_path reloadable deploy_on_startup unpack_wars <<< "$entry"
+    if [[ "$first" == false ]]; then printf ','; fi
+    printf '{"status":'; json_string "$status"
+    printf ',"source":'; json_string "$source"
+    if [[ "$status" == success ]]; then
+      printf ',"applicationName":'; json_string "$application_name"
+      printf ',"deploymentPath":'; json_string "$deployment_path"
+      printf ',"deploymentType":'; json_string "$deployment_type"
+      printf ',"containerConfig":{"contextPath":'; json_string "$context_path"
+      printf ',"reloadable":%s,"deployOnStartup":%s,"unpackWARs":%s}' "$reloadable" "$deploy_on_startup" "$unpack_wars"
+    fi
+    printf '}'
+    first=false
+  done
+  printf ']'
+}
+
 emit_instance() {
   local pid="$1" catalina_base="$2" tomcat_version="$3" java_version="$4" args_text="$5" http_port="$6"
   local instance_id="${host_ip}:${pid}"
@@ -247,6 +270,7 @@ emit_instance() {
   printf ',"gcLog":'; json_string "$gc_log"
   printf '} ,"connectors":'; emit_connectors
   printf ',"securityConfig":'; emit_security_config
+  printf ',"deployments":'; emit_deployments
   printf ',"httpPort":%s,"checks":[' "$http_port"
   printf '{"id":"tomcat.instance.identity.present","observedValue":'; json_string "$instance_id"; printf ',"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},'
   printf '{"id":"tomcat.version.support","observedValue":'; json_string "$tomcat_version"; printf ',"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},'

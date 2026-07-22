@@ -67,6 +67,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
     },
     connectors: [],
     securityConfig: { status: 'unavailable', source: 'local-static-config' },
+    deployments: [],
     httpPort: 8080,
     checks: [
       {
@@ -297,6 +298,53 @@ test('collector reports unavailable security configuration without accepting fre
     source: 'local-static-config'
   });
   assert.doesNotMatch(output, /Authorization: secret/);
+});
+
+test('collector structures the visible application deployment inventory without reading application contents', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
+      TOMCAT_INSPECTOR_DEPLOYMENTS: 'success|inventory:/opt/tomcat/webapps|orders|/opt/tomcat/webapps/orders|exploded-directory|/orders|true|true|true;success|context:/opt/tomcat/conf/Catalina/localhost/billing.xml|billing|/srv/apps/billing.war|external-war|/billing|false|true|false'
+    }
+  });
+
+  assert.deepEqual(parseCollectorOutput(output).instances[0].deployments, [
+    {
+      status: 'success',
+      source: 'inventory:/opt/tomcat/webapps',
+      applicationName: 'orders',
+      deploymentPath: '/opt/tomcat/webapps/orders',
+      deploymentType: 'exploded-directory',
+      containerConfig: { contextPath: '/orders', reloadable: true, deployOnStartup: true, unpackWARs: true }
+    },
+    {
+      status: 'success',
+      source: 'context:/opt/tomcat/conf/Catalina/localhost/billing.xml',
+      applicationName: 'billing',
+      deploymentPath: '/srv/apps/billing.war',
+      deploymentType: 'external-war',
+      containerConfig: { contextPath: '/billing', reloadable: false, deployOnStartup: true, unpackWARs: false }
+    }
+  ]);
+  assert.doesNotMatch(output, /applicationContent|businessEndpoint|clusterRelationship/);
+});
+
+test('collector records each deployment visibility limitation without inventing application facts', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_DEPLOYMENTS: 'restricted|inventory:/secure/webapps|||||||;unavailable|context:/opt/tomcat/conf/Catalina/localhost/app.xml|||||||;unreliable|deployment-source|||||||'
+    }
+  });
+
+  assert.deepEqual(parseCollectorOutput(output).instances[0].deployments, [
+    { status: 'restricted', source: 'inventory:/secure/webapps' },
+    { status: 'unavailable', source: 'context:/opt/tomcat/conf/Catalina/localhost/app.xml' },
+    { status: 'unreliable', source: 'deployment-source' }
+  ]);
 });
 
 test('collector script stays within the read-only collection boundary', () => {

@@ -61,15 +61,18 @@ export async function generateTomcatMarkdownReport({
     const hostResourceChecks = buildHostResourceChecks(document.host.resources);
     const connectorChecks = buildConnectorChecks(instance.connectors, document.host.cpuCount);
     const securityChecks = buildSecurityChecks(instance.securityConfig);
-    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks];
+    const deploymentChecks = buildDeploymentChecks(instance.deployments);
+    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks];
+    const countableRows = instance.deployments === undefined ? checkRows.filter(({ domain }) => domain !== 'application-deployment') : checkRows;
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
       hostResourceChecks,
       connectorChecks,
       securityChecks,
-      conclusionSummary: summarizeConclusions(checkRows),
-      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
+      deploymentChecks,
+      conclusionSummary: summarizeConclusions(countableRows),
+      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows, countableRows)
     });
   });
 
@@ -116,7 +119,32 @@ function validateInstance(instance, index) {
   }
   validateConnectors(instance.connectors, path);
   validateSecurityConfig(instance.securityConfig, path);
+  validateDeployments(instance.deployments, path);
   return reasons;
+}
+
+function validateDeployments(deployments, instancePath) {
+  if (deployments === undefined) return;
+  if (!Array.isArray(deployments)) rejectLog('DOCUMENT_SCHEMA_INVALID', `${instancePath}.deployments`, '应用部署事实结构无效。');
+  const deploymentTypes = ['exploded-directory', 'war', 'external-directory', 'external-war'];
+  deployments.forEach((deployment, index) => {
+    const path = `${instancePath}.deployments[${index}]`;
+    if (!deployment || typeof deployment !== 'object' || Array.isArray(deployment)
+      || !['success', 'restricted', 'unavailable', 'unreliable'].includes(deployment.status)
+      || typeof deployment.source !== 'string' || !deployment.source) {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', path, '应用部署事实结构无效。');
+    }
+    if (deployment.status !== 'success') return;
+    const config = deployment.containerConfig;
+    if (typeof deployment.applicationName !== 'string' || !deployment.applicationName
+      || typeof deployment.deploymentPath !== 'string' || !deployment.deploymentPath
+      || !deploymentTypes.includes(deployment.deploymentType)
+      || !config || typeof config !== 'object' || Array.isArray(config)
+      || typeof config.contextPath !== 'string'
+      || typeof config.reloadable !== 'boolean' || typeof config.deployOnStartup !== 'boolean' || typeof config.unpackWARs !== 'boolean') {
+      rejectLog('DOCUMENT_SCHEMA_INVALID', path, '应用部署事实结构无效。');
+    }
+  });
 }
 
 function validateSecurityConfig(config, instancePath) {
@@ -277,8 +305,8 @@ function renderDiscoveryCoverage(discovery, discoveryComplete) {
   return `## 实例发现覆盖范围\n\n${lines.join('\n')}\n\n${limitation}\n\n`;
 }
 
-function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows) {
-  const summary = summarizeConclusions(rows);
+function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows, countableRows = rows) {
+  const summary = summarizeConclusions(countableRows);
   const jvmSource = instance.jvmStartup?.source ?? '未采集';
   const jvmTrust = instance.jvmStartup?.trusted ? '可信' : '不可信';
   const jvmArgs = Array.isArray(instance.jvmStartup?.args) && instance.jvmStartup.args.length > 0
@@ -335,12 +363,51 @@ ${rows.filter(({ domain }) => domain === 'connector-thread-pool').map(({ id, con
 | --- | --- | --- | --- |
 ${rows.filter(({ domain }) => domain === 'static-security').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n')}
 
+## 应用部署概况域
+
+> 本域仅报告可见的部署清单与容器配置事实，不读取 WAR 内容、不扫描应用配置、不调用业务接口，也不推断应用或集群关系。
+
+| 巡检项 | 结论 | 采集事实 | 建议 |
+| --- | --- | --- | --- |
+${rows.filter(({ domain }) => domain === 'application-deployment').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n')}
+
 ${observations}## 巡检结论
 
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
-${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
+${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security', 'application-deployment'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
 `;
+}
+
+function buildDeploymentChecks(deployments) {
+  if (!deployments || deployments.length === 0) {
+    return [{
+      id: 'tomcat.application.deployment.inventory',
+      domain: 'application-deployment',
+      conclusion: '无法判断',
+      evidence: '采集状态：unavailable；来源：deployment-inventory；未采集可见应用部署事实',
+      suggestion: '补充可读的部署目录与容器上下文配置事实后人工核查；应用部署清单可能不完整。'
+    }];
+  }
+  return deployments.map((deployment) => {
+    if (deployment.status !== 'success') {
+      return {
+        id: 'tomcat.application.deployment.inventory',
+        domain: 'application-deployment',
+        conclusion: '无法判断',
+        evidence: `采集状态：${deployment.status}；来源：${deployment.source}`,
+        suggestion: '补充该部署来源的可见性后人工核查；应用部署清单可能不完整。'
+      };
+    }
+    const config = deployment.containerConfig;
+    return {
+      id: 'tomcat.application.deployment.inventory',
+      domain: 'application-deployment',
+      conclusion: '正常',
+      evidence: `应用：${deployment.applicationName}；路径：${deployment.deploymentPath}；形态：${deployment.deploymentType}；上下文路径：${config.contextPath || '/'}；reloadable：${config.reloadable}；deployOnStartup：${config.deployOnStartup}；unpackWARs：${config.unpackWARs}；来源：${deployment.source}`,
+      suggestion: '已记录巡检复核所需的最小部署与容器配置事实；结合发布记录人工复核。'
+    };
+  });
 }
 
 function buildSecurityChecks(config) {
