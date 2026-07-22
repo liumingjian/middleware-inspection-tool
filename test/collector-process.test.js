@@ -63,6 +63,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
       gc: 'G1GC',
       gcLog: '/var/log/tomcat/gc.log'
     },
+    connectors: [],
     httpPort: 8080,
     checks: [
       {
@@ -107,6 +108,32 @@ test('collector process emits one bounded Tomcat log document for the controlled
       }
     ]
   });
+});
+
+test('collector structures visible Connector and thread-pool configuration facts', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
+      TOMCAT_INSPECTOR_HOST_IP: '192.0.2.10',
+      TOMCAT_INSPECTOR_CONNECTORS: 'success|server.xml|HTTP/1.1|8080|explicit|shared-http|200|reference|100|version-default|20000|explicit;restricted|server.xml||||||||||'
+    }
+  });
+
+  assert.deepEqual(parseCollectorOutput(output).instances[0].connectors, [
+    {
+      status: 'success',
+      evidence: 'server.xml',
+      protocolHandler: 'HTTP/1.1',
+      port: { value: 8080, source: 'explicit' },
+      executor: 'shared-http',
+      maxThreads: { value: 200, source: 'reference' },
+      acceptCount: { value: 100, source: 'version-default' },
+      connectionTimeout: { value: 20000, source: 'explicit' }
+    },
+    { status: 'restricted', evidence: 'server.xml' }
+  ]);
 });
 
 test('collector records all discovery path outcomes and multiple visible instances', () => {
