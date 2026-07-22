@@ -24,6 +24,14 @@ export class MarkdownConversionError extends Error {
   }
 }
 
+export class ReportSessionEndedError extends Error {
+  constructor() {
+    super('报告生成会话已结束，旧内容和产物不可再访问。');
+    this.name = 'ReportSessionEndedError';
+    this.code = 'REPORT_SESSION_ENDED';
+  }
+}
+
 export function createTomcatReportSession(reports) {
   const states = new Map(reports.map((report) => [report.instanceId, {
     ...report,
@@ -31,8 +39,14 @@ export function createTomcatReportSession(reports) {
     markdown: report.markdown
   }]));
   let currentInstanceId = reports[0]?.instanceId;
+  let ended = false;
+
+  const assertActive = () => {
+    if (ended) throw new ReportSessionEndedError();
+  };
 
   const getState = (instanceId) => {
+    assertActive();
     const state = states.get(instanceId);
     if (!state) throw new Error(`未知巡检实例：${instanceId}`);
     return state;
@@ -46,6 +60,7 @@ export function createTomcatReportSession(reports) {
 
   return {
     listInstances() {
+      assertActive();
       return [...states.values()].map((state) => ({
         instanceId: state.instanceId,
         conclusionSummary: state.conclusionSummary,
@@ -74,26 +89,44 @@ export function createTomcatReportSession(reports) {
       return previewTomcatMarkdown(getState(instanceId).markdown);
     },
     exportDocx(instanceId) {
-      return exportTomcatDocx(getState(instanceId));
+      const state = getState(instanceId);
+      return exportForActiveSession(state);
     },
     exportCurrentDocx() {
-      return exportTomcatDocx(getState(currentInstanceId));
+      const state = getState(currentInstanceId);
+      return exportForActiveSession(state);
     },
     async exportAllDocxZip() {
+      assertActive();
       const archive = new JSZip();
       let sequence = 0;
       for (const state of states.values()) {
         sequence += 1;
         const exported = await exportTomcatDocx(state);
+        assertActive();
         const revisedSuffix = exported.reportType === 'user-revised' ? '-user-revised' : '';
         archive.file(`tomcat-${safeFilename(state.instanceId)}-${sequence}${revisedSuffix}.docx`, exported.content);
       }
+      const content = await archive.generateAsync({ type: 'nodebuffer' });
+      assertActive();
       return {
         filename: 'tomcat-instance-reports.zip',
-        content: await archive.generateAsync({ type: 'nodebuffer' })
+        content
       };
+    },
+    end() {
+      if (ended) return;
+      ended = true;
+      currentInstanceId = undefined;
+      states.clear();
     }
   };
+
+  async function exportForActiveSession(state) {
+    const exported = await exportTomcatDocx(state);
+    assertActive();
+    return exported;
+  }
 }
 
 export function previewTomcatMarkdown(markdown) {

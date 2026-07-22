@@ -44,6 +44,51 @@ async function reopenDocx(buffer) {
   return { documentXml, paragraphs, tables };
 }
 
+test('ending a report session clears its state and makes old products inaccessible', async () => {
+  const session = createTomcatReportSession([
+    { instanceId: 'host:1001', markdown: generatedMarkdown }
+  ]);
+  session.updateCurrentMarkdown('# 用户修订\n\n仅属于当前会话。');
+
+  session.end();
+
+  assert.throws(
+    () => session.getCurrentReport(),
+    (error) => error.code === 'REPORT_SESSION_ENDED'
+  );
+  assert.throws(
+    () => session.listInstances(),
+    (error) => error.code === 'REPORT_SESSION_ENDED'
+  );
+  assert.throws(
+    () => session.exportCurrentDocx(),
+    (error) => error.code === 'REPORT_SESSION_ENDED'
+  );
+});
+
+test('ending a session invalidates an in-flight export and a new session starts independently', async () => {
+  const first = createTomcatReportSession([
+    { instanceId: 'host:1001', markdown: generatedMarkdown }
+  ]);
+  first.updateCurrentMarkdown('# 旧会话\n\n不得恢复。');
+  const pendingExport = first.exportCurrentDocx();
+
+  first.end();
+
+  await assert.rejects(
+    pendingExport,
+    (error) => error.code === 'REPORT_SESSION_ENDED'
+  );
+  const next = createTomcatReportSession([
+    { instanceId: 'host:1001', markdown: '# 新会话\n\n独立输入。' }
+  ]);
+  assert.deepEqual(next.getCurrentReport(), {
+    instanceId: 'host:1001',
+    markdown: '# 新会话\n\n独立输入。',
+    revisionStatus: 'system-generated'
+  });
+});
+
 test('a report session lists valid instances and navigates without losing independent edits', () => {
   const firstMarkdown = generatedMarkdown;
   const secondMarkdown = '# 第二份报告\n\n未修改。';
