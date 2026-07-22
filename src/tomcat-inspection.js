@@ -6,6 +6,76 @@ export const TOMCAT_RULE_VERSION = 'tomcat-rules/0.1.0';
 export const LOG_BEGIN = '===TOMCAT_INSPECTION_JSON_BEGIN===';
 export const LOG_END = '===TOMCAT_INSPECTION_JSON_END===';
 
+const TOMCAT_VERSION_VECTORS = {
+  '8.5': { status: 'supported', line: '8.5', javaMinimum: 7, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
+  '9.0': { status: 'supported', line: '9.0', javaMinimum: 8, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
+  '10.1': { status: 'supported', line: '10.1', javaMinimum: 11, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } }
+};
+
+const RULE_CATALOG = {
+  ruleVersion: TOMCAT_RULE_VERSION,
+  domains: [
+    ruleDomain('host-resources', [
+      ruleContract('host.disk.capacity', ['host.resources.disk']),
+      ruleContract('host.inode.capacity', ['host.resources.inode']),
+      ruleContract('host.memory.available', ['host.resources.memory'])
+    ]),
+    ruleDomain('instance-jvm-startup', [
+      ruleContract('tomcat.instance.identity.present', ['instanceId', 'pid', 'catalinaBase']),
+      ruleContract('tomcat.version.support', ['tomcatVersion']),
+      ruleContract('tomcat.java.version.present', ['javaVersion']),
+      ruleContract('tomcat.jvm.xms.present', ['jvmStartup.xms']),
+      ruleContract('tomcat.jvm.xmx.present', ['jvmStartup.xmx']),
+      ruleContract('tomcat.jvm.gc.present', ['jvmStartup.gc']),
+      ruleContract('tomcat.jvm.gc-log.present', ['jvmStartup.gcLog']),
+      ruleContract('tomcat.http.port.present', ['checks.tomcat.http.port.present'])
+    ]),
+    ruleDomain('connector-thread-pool', [
+      ruleContract('tomcat.connector.connection-timeout', ['connectors.connectionTimeout']),
+      ruleContract('tomcat.thread-pool.host-capacity', ['connectors.maxThreads', 'host.cpuCount']),
+      ruleContract('tomcat.connector.accept-count', ['connectors.acceptCount'])
+    ]),
+    ruleDomain('static-security', [
+      ruleContract('tomcat.security.configuration', ['securityConfig']),
+      ruleContract('tomcat.security.directory-listing', ['securityConfig.directoryListingEnabled']),
+      ruleContract('tomcat.security.auto-deploy', ['securityConfig.autoDeployEnabled']),
+      ruleContract('tomcat.security.server-info', ['securityConfig.serverInfoExposed']),
+      ruleContract('tomcat.security.shutdown-port', ['securityConfig.shutdownPort']),
+      ruleContract('tomcat.security.tls-connector', ['securityConfig.tlsConnectorPresent'])
+    ]),
+    ruleDomain('application-deployment', [
+      ruleContract('tomcat.application.deployment.inventory', ['deployments'])
+    ]),
+    ruleDomain('logging-file-status', [
+      ruleContract('tomcat.logging.configuration', ['logTargets.configuration', 'logTargets.fileMetadata'])
+    ])
+  ]
+};
+
+function ruleDomain(id, checks) {
+  return { id, checks };
+}
+
+function ruleContract(id, requiredFacts) {
+  return {
+    id,
+    applicableVersions: ['8.5', '9.0', '10.1'],
+    requiredFacts,
+    minimumEvidence: ['collection-status', 'source'],
+    rule: 'Only evaluate supported versions from normalized facts; missing or unreliable minimum evidence yields unknown.'
+  };
+}
+
+export function getTomcatRuleCatalog() {
+  return structuredClone(RULE_CATALOG);
+}
+
+export function getTomcatVersionRuleVector(version) {
+  if (typeof version !== 'string' || !version) return { status: 'unknown', line: null };
+  const line = getSupportedTomcatLine(version);
+  return line ? structuredClone(TOMCAT_VERSION_VECTORS[line]) : { status: 'unsupported', line: null };
+}
+
 const SCRIPT_PATH = new URL('../scripts/tomcat-readonly-collector.sh', import.meta.url);
 
 export class InspectionLogError extends Error {
@@ -64,6 +134,10 @@ export async function generateTomcatMarkdownReport({
     const deploymentChecks = buildDeploymentChecks(instance.deployments);
     const logChecks = buildLogChecks(instance.logTargets);
     const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks, ...logChecks];
+    const conclusionSummary = summarizeConclusions(checkRows);
+    const versionRuleVector = getTomcatVersionRuleVector(instance.tomcatVersion);
+    const provenance = buildProvenance(document, generatedAt);
+    const reportView = buildReportView(versionRuleVector, conclusionSummary, checkRows, document.host.observations ?? [], provenance);
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
@@ -72,8 +146,11 @@ export async function generateTomcatMarkdownReport({
       securityChecks,
       deploymentChecks,
       logChecks,
-      conclusionSummary: summarizeConclusions(checkRows),
-      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
+      conclusionSummary,
+      versionRuleVector,
+      provenance,
+      reportView,
+      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows, reportView)
     });
   });
 
@@ -345,7 +422,42 @@ function renderDiscoveryCoverage(discovery, discoveryComplete) {
   return `## 实例发现覆盖范围\n\n${lines.join('\n')}\n\n${limitation}\n\n`;
 }
 
-function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows) {
+function buildProvenance(document, generatedAt) {
+  return {
+    collectorVersion: document.collectorVersion,
+    protocolVersion: document.protocolVersion,
+    ruleVersion: TOMCAT_RULE_VERSION,
+    collectedAt: document.collectedAt,
+    generatedAt,
+    snapshotBoundary: '本报告仅反映单次采集快照，不代表历史趋势或持续状态。'
+  };
+}
+
+function buildReportView(versionRuleVector, conclusionSummary, rows, observations, provenance) {
+  const sections = [
+    ['report-notes', '报告说明'],
+    ['instance-overview', '实例概况'],
+    ['conclusion-summary', '结论摘要'],
+    ['host-resources', '主机资源域'],
+    ['instance-jvm-startup', '实例与 JVM 启动域'],
+    ['connector-thread-pool', 'Connector 与线程池域'],
+    ['static-security', '静态配置安全域'],
+    ['application-deployment', '应用部署概况域'],
+    ['logging-file-status', '日志配置与文件状态域'],
+    ['unknown-and-limitations', '无法判断与采集限制'],
+    ['appendix', '附录']
+  ].map(([id, title]) => ({ id, title }));
+  return {
+    operatingMode: versionRuleVector.status === 'supported' ? 'normal' : 'degraded',
+    sections,
+    conclusionSummary,
+    checks: rows,
+    observations,
+    provenance
+  };
+}
+
+function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows, reportView) {
   const summary = summarizeConclusions(rows);
   const jvmSource = instance.jvmStartup?.source ?? '未采集';
   const jvmTrust = instance.jvmStartup?.trusted ? '可信' : '不可信';
@@ -354,10 +466,22 @@ function renderMarkdownReport(document, instance, generatedAt, discoveryComplete
     : '未采集';
 
   const observations = renderHostObservations(document.host.observations ?? []);
+  const versionNotice = reportView.operatingMode === 'degraded'
+    ? '当前 Tomcat 版本不受规则集支持，报告已降级；适用性相关结论需人工复核。'
+    : '当前 Tomcat 版本使用已版本化的内置规则集。';
+  const unknownRows = rows.filter(({ conclusion }) => conclusion === '无法判断');
 
   return `# Tomcat 单实例巡检报告
 
-## 实例身份
+## 报告说明
+
+${reportView.provenance.snapshotBoundary}
+
+${versionNotice}
+
+报告分别统计正常、警告、异常、无法判断和不适用；观察指标不参与结论计数。本报告不生成总体风险或总体健康等级。
+
+## 实例概况
 
 - 主机名：${document.host.hostname}
 - 主机 IP：${document.host.ip}
@@ -374,7 +498,9 @@ function renderMarkdownReport(document, instance, generatedAt, discoveryComplete
 - 采集时间：${document.collectedAt}
 - 报告生成时间：${generatedAt}
 
-${renderDiscoveryCoverage(document.discovery ?? [], discoveryComplete)}## JVM 启动配置
+${renderDiscoveryCoverage(document.discovery ?? [], discoveryComplete)}## 实例与 JVM 启动域
+
+### JVM 启动配置
 
 - 启动参数来源：${jvmSource}（${jvmTrust}）
 - JVM 参数：${jvmArgs}
@@ -424,6 +550,21 @@ ${observations}## 巡检结论
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
 ${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security', 'application-deployment', 'logging-file-status'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
+
+## 无法判断与采集限制
+
+${unknownRows.length === 0 ? '无无法判断项。' : unknownRows.map(({ id, evidence, fact }) => `- ${id}：${evidence ?? fact ?? '最低证据不足'}`).join('\n')}
+
+- 实例发现完整性：${discoveryComplete ? '完整' : '不完整，实例清单可能受低权限或工具可用性限制'}
+- ${reportView.provenance.snapshotBoundary}
+
+## 附录
+
+- 采集脚本版本：${reportView.provenance.collectorVersion}
+- 协议版本：${reportView.provenance.protocolVersion}
+- 规则版本：${reportView.provenance.ruleVersion}
+- 采集时间：${reportView.provenance.collectedAt}
+- 报告生成时间：${reportView.provenance.generatedAt}
 `;
 }
 
