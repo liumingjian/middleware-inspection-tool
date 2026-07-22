@@ -60,12 +60,14 @@ export async function generateTomcatMarkdownReport({
     }
     const hostResourceChecks = buildHostResourceChecks(document.host.resources);
     const connectorChecks = buildConnectorChecks(instance.connectors, document.host.cpuCount);
-    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks];
+    const securityChecks = buildSecurityChecks(instance.securityConfig);
+    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks];
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
       hostResourceChecks,
       connectorChecks,
+      securityChecks,
       conclusionSummary: summarizeConclusions(checkRows),
       markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
     });
@@ -113,7 +115,24 @@ function validateInstance(instance, index) {
     reasons.push({ path: `${path}.checks`, code: 'INSTANCE_CHECKS_INVALID', message: '实例巡检项必须是数组。' });
   }
   validateConnectors(instance.connectors, path);
+  validateSecurityConfig(instance.securityConfig, path);
   return reasons;
+}
+
+function validateSecurityConfig(config, instancePath) {
+  if (config === undefined) return;
+  const path = `${instancePath}.securityConfig`;
+  if (!config || typeof config !== 'object' || Array.isArray(config)
+    || !['success', 'restricted', 'unavailable', 'unreliable'].includes(config.status)
+    || config.source !== 'local-static-config') {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', path, 'Tomcat 静态安全配置事实无效。');
+  }
+  if (config.status !== 'success') return;
+  const booleanFacts = ['directoryListingEnabled', 'autoDeployEnabled', 'serverInfoExposed', 'tlsConnectorPresent'];
+  if (booleanFacts.some((name) => typeof config[name] !== 'boolean')
+    || !Number.isInteger(config.shutdownPort) || config.shutdownPort < -1 || config.shutdownPort > 65535) {
+    rejectLog('DOCUMENT_SCHEMA_INVALID', path, 'Tomcat 静态安全配置事实无效。');
+  }
 }
 
 function validateConnectors(connectors, instancePath) {
@@ -308,12 +327,48 @@ ${rows.filter(({ domain }) => domain === 'host-resources').map(({ id, conclusion
 | --- | --- | --- | --- |
 ${rows.filter(({ domain }) => domain === 'connector-thread-pool').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n') || '| - | 无法判断 | 未采集 Connector 事实 | 补充可读 server.xml 后人工核查。 |'}
 
+## 静态配置安全域
+
+> 本域仅覆盖本地静态配置基线，不执行 CVE 匹配、主动探测或登录尝试，也不构成完整安全评估。
+
+| 巡检项 | 结论 | 采集事实 | 建议 |
+| --- | --- | --- | --- |
+${rows.filter(({ domain }) => domain === 'static-security').map(({ id, conclusion, evidence, suggestion }) => `| ${id} | ${conclusion} | ${evidence} | ${suggestion} |`).join('\n')}
+
 ${observations}## 巡检结论
 
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
-${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
+${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
 `;
+}
+
+function buildSecurityChecks(config) {
+  if (!config || config.status !== 'success') {
+    return [{
+      id: 'tomcat.security.configuration',
+      domain: 'static-security',
+      conclusion: '无法判断',
+      evidence: `采集状态：${config?.status ?? 'unavailable'}；来源：${config?.source ?? 'local-static-config'}`,
+      suggestion: '补充可读的本地静态安全配置事实后人工核查。'
+    }];
+  }
+  return [
+    securityCheck('tomcat.security.directory-listing', config.directoryListingEnabled ? '异常' : '正常', `目录列表：${config.directoryListingEnabled ? '启用' : '关闭'}`,
+      config.directoryListingEnabled ? '已证明目录列表启用；先核查应用依赖并通过客户变更流程关闭目录列表。' : '目录列表已关闭，保持静态配置审查。'),
+    securityCheck('tomcat.security.auto-deploy', config.autoDeployEnabled ? '警告' : '正常', `自动部署：${config.autoDeployEnabled ? '启用' : '关闭'}`,
+      config.autoDeployEnabled ? '自动部署已启用，存在基线偏离风险；核查部署流程后通过客户变更流程评估关闭。' : '自动部署已关闭，保持静态配置审查。'),
+    securityCheck('tomcat.security.server-info', config.serverInfoExposed ? '警告' : '正常', `服务端版本信息暴露：${config.serverInfoExposed ? '是' : '否'}`,
+      config.serverInfoExposed ? '服务端版本信息可见；核查兼容性后通过客户变更流程减少信息暴露。' : '未发现服务端版本信息暴露。'),
+    securityCheck('tomcat.security.shutdown-port', config.shutdownPort === -1 ? '正常' : '警告', `关闭端口：${config.shutdownPort}`,
+      config.shutdownPort === -1 ? '关闭端口已禁用。' : '关闭端口已启用；核查运维依赖和访问边界后通过客户变更流程评估禁用。'),
+    securityCheck('tomcat.security.tls-connector', '不适用', `TLS Connector：${config.tlsConnectorPresent ? '存在' : '未发现'}`,
+      'TLS 是否应在 Tomcat 终止取决于部署拓扑；结合反向代理与网络边界人工核查。')
+  ];
+}
+
+function securityCheck(id, conclusion, evidence, suggestion) {
+  return { id, domain: 'static-security', conclusion, evidence, suggestion };
 }
 
 function buildConnectorChecks(connectors, cpuCount) {
