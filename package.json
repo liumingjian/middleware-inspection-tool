@@ -1,0 +1,14 @@
+{
+  "name": "middleware-inspection-tool",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "test:acceptance": "node --test test/tomcat-mvp-acceptance.test.js"
+  },
+  "dependencies": {
+    "docx": "^9.7.1",
+    "jszip": "^3.10.1"
+  }
+}

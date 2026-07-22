@@ -51,6 +51,17 @@
 
 更详细的技术调研见 [research/db-check-architecture.md](research/db-check-architecture.md)。
 
+## Tomcat MVP 端到端验收
+
+安装依赖后运行以下固定入口；命令以非零退出码表示验收失败：
+
+```sh
+npm ci
+npm run test:acceptance
+```
+
+验收使用受控 Linux collector 场景生成真实标准巡检日志，并覆盖报告分析、Markdown 修订、单份 DOCX 及多实例 ZIP 的语义验证。
+
 ## 当前状态
 
 当前项目仍处于设计阶段。GitHub Issues 是 Wayfinder 规划的 canonical tracker：
