@@ -286,7 +286,7 @@ function splitTableRow(line) {
 }
 
 function parseInline(text, line) {
-  if (/`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~|\*\*[^*]+\*\*|__[^_]+__|(?<!\*)\*[^*]+\*(?!\*)|(?<!_)_[^_]+_(?!_)/.test(text)) {
+  if (/`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~|\*\*[^*]+\*\*|__[^_]+__|(?<!\*)\*[^*]+\*(?!\*)|(?<![\p{Letter}\p{Number}_])_[^_\n]+_(?![\p{Letter}\p{Number}_])/u.test(text)) {
     unsupported(line, '行内代码、链接、删除线或强调格式');
   }
   return text;
