@@ -182,15 +182,15 @@ test('report generation application boundary turns a pasted Tomcat log carrier i
   assert.match(result.reports[0].markdown, /tomcat\.http\.port\.present \| 正常 \| HTTP 端口：8080/);
 });
 
-test('report generation marks unsupported Tomcat minor lines instead of treating them as supported', async () => {
+test('report generation marks unsupported Tomcat minor lines as abnormal and degrades analysis', async () => {
   const result = await generateTomcatMarkdownReport({
     selectedMiddleware: 'tomcat',
     pastedLogCarrier: buildCarrier({ tomcatVersion: '7.0.109' }),
     generatedAt: '2026-07-21T01:02:03Z'
   });
 
-  assert.match(result.reports[0].markdown, /tomcat\.version\.support \| 警告 \| Tomcat 版本：7\.0\.109（不支持版本）/);
-  assert.match(result.reports[0].markdown, /Tomcat MVP 仅明确支持 8\.5、9\.0 和 10\.1/);
+  assert.match(result.reports[0].markdown, /tomcat\.version\.support \| 异常 \| Tomcat 版本：7\.0\.109（不支持版本）/);
+  assert.match(result.reports[0].markdown, /Tomcat MVP 仅明确支持 9\.0 和 10\.1/);
 });
 
 test('report generation does not classify a missing Tomcat version as unsupported', async () => {

@@ -6,6 +6,76 @@ export const TOMCAT_RULE_VERSION = 'tomcat-rules/0.1.0';
 export const LOG_BEGIN = '===TOMCAT_INSPECTION_JSON_BEGIN===';
 export const LOG_END = '===TOMCAT_INSPECTION_JSON_END===';
 
+const TOMCAT_VERSION_VECTORS = {
+  '8.5': { status: 'legacy_eol', line: '8.5', javaMinimum: 7, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
+  '9.0': { status: 'supported', line: '9.0', javaMinimum: 8, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
+  '10.1': { status: 'supported', line: '10.1', javaMinimum: 11, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } }
+};
+
+const RULE_CATALOG = {
+  ruleVersion: TOMCAT_RULE_VERSION,
+  domains: [
+    ruleDomain('host-resources', [
+      ruleContract('host.disk.capacity', ['host.resources.disk']),
+      ruleContract('host.inode.capacity', ['host.resources.inode']),
+      ruleContract('host.memory.available', ['host.resources.memory'])
+    ]),
+    ruleDomain('instance-jvm-startup', [
+      ruleContract('tomcat.instance.identity.present', ['instanceId', 'pid', 'catalinaBase']),
+      ruleContract('tomcat.version.support', ['tomcatVersion']),
+      ruleContract('tomcat.java.version.present', ['javaVersion']),
+      ruleContract('tomcat.jvm.xms.present', ['jvmStartup.xms']),
+      ruleContract('tomcat.jvm.xmx.present', ['jvmStartup.xmx']),
+      ruleContract('tomcat.jvm.gc.present', ['jvmStartup.gc']),
+      ruleContract('tomcat.jvm.gc-log.present', ['jvmStartup.gcLog']),
+      ruleContract('tomcat.http.port.present', ['checks.tomcat.http.port.present'])
+    ]),
+    ruleDomain('connector-thread-pool', [
+      ruleContract('tomcat.connector.connection-timeout', ['connectors.connectionTimeout']),
+      ruleContract('tomcat.thread-pool.host-capacity', ['connectors.maxThreads', 'host.cpuCount']),
+      ruleContract('tomcat.connector.accept-count', ['connectors.acceptCount'])
+    ]),
+    ruleDomain('static-security', [
+      ruleContract('tomcat.security.configuration', ['securityConfig']),
+      ruleContract('tomcat.security.directory-listing', ['securityConfig.directoryListingEnabled']),
+      ruleContract('tomcat.security.auto-deploy', ['securityConfig.autoDeployEnabled']),
+      ruleContract('tomcat.security.server-info', ['securityConfig.serverInfoExposed']),
+      ruleContract('tomcat.security.shutdown-port', ['securityConfig.shutdownPort']),
+      ruleContract('tomcat.security.tls-connector', ['securityConfig.tlsConnectorPresent'])
+    ]),
+    ruleDomain('application-deployment', [
+      ruleContract('tomcat.application.deployment.inventory', ['deployments'])
+    ]),
+    ruleDomain('logging-file-status', [
+      ruleContract('tomcat.logging.configuration', ['logTargets.configuration', 'logTargets.fileMetadata'])
+    ])
+  ]
+};
+
+function ruleDomain(id, checks) {
+  return { id, checks };
+}
+
+function ruleContract(id, requiredFacts) {
+  return {
+    id,
+    applicableVersions: ['8.5', '9.0', '10.1'],
+    requiredFacts,
+    minimumEvidence: ['collection-status', 'source'],
+    rule: 'Only evaluate supported versions from normalized facts; missing or unreliable minimum evidence yields unknown.'
+  };
+}
+
+export function getTomcatRuleCatalog() {
+  return structuredClone(RULE_CATALOG);
+}
+
+export function getTomcatVersionRuleVector(version) {
+  if (typeof version !== 'string' || !version) return { status: 'unknown', line: null };
+  const line = getSupportedTomcatLine(version);
+  return line ? structuredClone(TOMCAT_VERSION_VECTORS[line]) : { status: 'unsupported', line: null };
+}
+
 const SCRIPT_PATH = new URL('../scripts/tomcat-readonly-collector.sh', import.meta.url);
 
 export class InspectionLogError extends Error {
@@ -63,7 +133,11 @@ export async function generateTomcatMarkdownReport({
     const securityChecks = buildSecurityChecks(instance.securityConfig);
     const deploymentChecks = buildDeploymentChecks(instance.deployments);
     const logChecks = buildLogChecks(instance.logTargets);
-    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks, ...logChecks];
+    const versionRuleVector = getTomcatVersionRuleVector(instance.tomcatVersion);
+    const checkRows = buildVersionedCheckRows(instance, versionRuleVector, document);
+    const conclusionSummary = summarizeConclusions(checkRows);
+    const provenance = buildProvenance(document, generatedAt);
+    const reportView = buildReportView(versionRuleVector, conclusionSummary, checkRows, document.host.observations ?? [], provenance);
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
@@ -72,8 +146,11 @@ export async function generateTomcatMarkdownReport({
       securityChecks,
       deploymentChecks,
       logChecks,
-      conclusionSummary: summarizeConclusions(checkRows),
-      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows)
+      conclusionSummary,
+      versionRuleVector,
+      provenance,
+      reportView,
+      markdown: renderMarkdownReport(document, instance, generatedAt, discoveryComplete, checkRows, reportView)
     });
   });
 
@@ -345,7 +422,58 @@ function renderDiscoveryCoverage(discovery, discoveryComplete) {
   return `## 实例发现覆盖范围\n\n${lines.join('\n')}\n\n${limitation}\n\n`;
 }
 
-function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows) {
+function buildProvenance(document, generatedAt) {
+  return {
+    collectorVersion: document.collectorVersion,
+    protocolVersion: document.protocolVersion,
+    ruleVersion: TOMCAT_RULE_VERSION,
+    collectedAt: document.collectedAt,
+    generatedAt,
+    snapshotBoundary: '本报告仅反映单次采集快照，不代表历史趋势或持续状态。'
+  };
+}
+
+function buildVersionedCheckRows(instance, versionRuleVector, document) {
+  const rows = [
+    ...buildCheckRows(instance, versionRuleVector),
+    ...buildHostResourceChecks(document.host.resources),
+    ...buildConnectorChecks(instance.connectors, document.host.cpuCount),
+    ...buildSecurityChecks(instance.securityConfig),
+    ...buildDeploymentChecks(instance.deployments),
+    ...buildLogChecks(instance.logTargets)
+  ];
+  if (versionRuleVector.status !== 'unsupported' && versionRuleVector.status !== 'unknown') return rows;
+  return rows.map((row) => row.id === 'tomcat.version.support'
+    ? row
+    : { ...row, conclusion: '无法判断', suggestion: '当前 Tomcat 版本不受规则集支持；补充适用规则后人工核查。' });
+}
+
+function buildReportView(versionRuleVector, conclusionSummary, rows, observations, provenance) {
+  const sections = [
+    ['report-notes', '报告说明'],
+    ['instance-overview', '实例概况'],
+    ['conclusion-summary', '结论摘要'],
+    ['host-resources', '主机资源域'],
+    ['instance-jvm-startup', '实例与 JVM 启动域'],
+    ['connector-thread-pool', 'Connector 与线程池域'],
+    ['static-security', '静态配置安全域'],
+    ['application-deployment', '应用部署概况域'],
+    ['logging-file-status', '日志配置与文件状态域'],
+    ['unknown-and-limitations', '无法判断与采集限制'],
+    ['appendix', '附录']
+  ].map(([id, title]) => ({ id, title }));
+  return {
+    operatingMode: versionRuleVector.status === 'supported' ? 'normal' : 'degraded',
+    versionRuleVector,
+    sections,
+    conclusionSummary,
+    checks: rows,
+    observations,
+    provenance
+  };
+}
+
+function renderMarkdownReport(document, instance, generatedAt, discoveryComplete, rows, reportView) {
   const summary = summarizeConclusions(rows);
   const jvmSource = instance.jvmStartup?.source ?? '未采集';
   const jvmTrust = instance.jvmStartup?.trusted ? '可信' : '不可信';
@@ -354,10 +482,24 @@ function renderMarkdownReport(document, instance, generatedAt, discoveryComplete
     : '未采集';
 
   const observations = renderHostObservations(document.host.observations ?? []);
+  const versionNotice = reportView.versionRuleVector?.status === 'legacy_eol'
+    ? 'Tomcat 8.5 已停止维护，报告已降级；除已证明问题外，其余适用性相关结论需人工复核。'
+    : reportView.operatingMode === 'degraded'
+      ? '当前 Tomcat 版本不受规则集支持，报告已降级；适用性相关结论需人工复核。'
+      : '当前 Tomcat 版本使用已版本化的内置规则集。';
+  const unknownRows = rows.filter(({ conclusion }) => conclusion === '无法判断');
 
   return `# Tomcat 单实例巡检报告
 
-## 实例身份
+## 报告说明
+
+${reportView.provenance.snapshotBoundary}
+
+${versionNotice}
+
+报告分别统计正常、警告、异常、无法判断和不适用；观察指标不参与结论计数。本报告不生成总体风险或总体健康等级。
+
+## 实例概况
 
 - 主机名：${document.host.hostname}
 - 主机 IP：${document.host.ip}
@@ -374,7 +516,9 @@ function renderMarkdownReport(document, instance, generatedAt, discoveryComplete
 - 采集时间：${document.collectedAt}
 - 报告生成时间：${generatedAt}
 
-${renderDiscoveryCoverage(document.discovery ?? [], discoveryComplete)}## JVM 启动配置
+${renderDiscoveryCoverage(document.discovery ?? [], discoveryComplete)}## 实例与 JVM 启动域
+
+### JVM 启动配置
 
 - 启动参数来源：${jvmSource}（${jvmTrust}）
 - JVM 参数：${jvmArgs}
@@ -424,6 +568,21 @@ ${observations}## 巡检结论
 | 巡检项 | 结论 | 采集事实 | 建议 |
 | --- | --- | --- | --- |
 ${rows.filter(({ domain }) => !['host-resources', 'connector-thread-pool', 'static-security', 'application-deployment', 'logging-file-status'].includes(domain)).map(({ id, conclusion, fact, suggestion }) => `| ${id} | ${conclusion} | ${fact} | ${suggestion} |`).join('\n')}
+
+## 无法判断与采集限制
+
+${unknownRows.length === 0 ? '无无法判断项。' : unknownRows.map(({ id, evidence, fact }) => `- ${id}：${evidence ?? fact ?? '最低证据不足'}`).join('\n')}
+
+- 实例发现完整性：${discoveryComplete ? '完整' : '不完整，实例清单可能受低权限或工具可用性限制'}
+- ${reportView.provenance.snapshotBoundary}
+
+## 附录
+
+- 采集脚本版本：${reportView.provenance.collectorVersion}
+- 协议版本：${reportView.provenance.protocolVersion}
+- 规则版本：${reportView.provenance.ruleVersion}
+- 采集时间：${reportView.provenance.collectedAt}
+- 报告生成时间：${reportView.provenance.generatedAt}
 `;
 }
 
@@ -650,12 +809,14 @@ function renderHostObservations(observations) {
   return `## 观察指标（不参与结论计数）\n\n${lines.join('\n')}\n\n`;
 }
 
-function buildCheckRows(instance) {
+function buildCheckRows(instance, versionRuleVector) {
   const supportedLine = getSupportedTomcatLine(instance.tomcatVersion);
+  const legacyEol = versionRuleVector.status === 'legacy_eol';
+  const degradeConclusion = (conclusion) => legacyEol && conclusion === '正常' ? '无法判断' : conclusion;
   return [
     {
       id: 'tomcat.instance.identity.present',
-      conclusion: instance.instanceId && instance.pid && instance.catalinaBase ? '正常' : '无法判断',
+      conclusion: instance.instanceId && instance.pid && instance.catalinaBase ? degradeConclusion('正常') : '无法判断',
       fact: instance.instanceId ? `实例标识：${instance.instanceId}` : '实例标识：未采集',
       suggestion: instance.instanceId && instance.pid && instance.catalinaBase
         ? '已采集实例身份，按本次采集主机与进程号区分报告。'
@@ -663,31 +824,35 @@ function buildCheckRows(instance) {
     },
     {
       id: 'tomcat.version.support',
-      conclusion: supportedLine ? '正常' : instance.tomcatVersion ? '警告' : '无法判断',
-      fact: supportedLine
-        ? `Tomcat 版本：${instance.tomcatVersion}（支持 Tomcat ${supportedLine}）`
-        : instance.tomcatVersion
-          ? `Tomcat 版本：${instance.tomcatVersion}（不支持版本）`
-          : 'Tomcat 版本：未采集',
-      suggestion: supportedLine
-        ? '当前版本在 Tomcat MVP 支持范围内。'
-        : instance.tomcatVersion
-          ? 'Tomcat MVP 仅明确支持 8.5、9.0 和 10.1；不支持版本需人工确认适用规则。'
-          : '补充 Tomcat 版本后人工核查适用规则。'
+      conclusion: legacyEol ? '异常' : supportedLine ? '正常' : instance.tomcatVersion ? '异常' : '无法判断',
+      fact: legacyEol
+        ? `Tomcat 版本：${instance.tomcatVersion}（Tomcat 8.5 已停止维护）`
+        : supportedLine
+          ? `Tomcat 版本：${instance.tomcatVersion}（支持 Tomcat ${supportedLine}）`
+          : instance.tomcatVersion
+            ? `Tomcat 版本：${instance.tomcatVersion}（不支持版本）`
+            : 'Tomcat 版本：未采集',
+      suggestion: legacyEol
+        ? 'Tomcat 8.5 已停止维护；通过客户变更流程迁移至受支持版本。'
+        : supportedLine
+          ? '当前版本在 Tomcat MVP 支持范围内。'
+          : instance.tomcatVersion
+            ? 'Tomcat MVP 仅明确支持 9.0 和 10.1；不支持版本需人工确认适用规则。'
+            : '补充 Tomcat 版本后人工核查适用规则。'
     },
     {
       id: 'tomcat.java.version.present',
-      conclusion: instance.javaVersion ? '正常' : '无法判断',
+      conclusion: instance.javaVersion ? degradeConclusion('正常') : '无法判断',
       fact: instance.javaVersion ? `Java 版本：${instance.javaVersion}` : 'Java 版本：未采集',
       suggestion: instance.javaVersion
         ? '已采集 Java 版本，结合 Tomcat 版本继续复核兼容性。'
         : '补充 Java 版本后人工核查。'
     },
-    jvmRow(instance, 'tomcat.jvm.xms.present', 'xms', '-Xms', 'JVM 初始堆参数，按容量规划复核。'),
-    jvmRow(instance, 'tomcat.jvm.xmx.present', 'xmx', '-Xmx', 'JVM 最大堆参数，按容量规划复核。'),
-    jvmRow(instance, 'tomcat.jvm.gc.present', 'gc', 'GC', 'GC 选择参数，结合 Java 版本复核。'),
-    jvmRow(instance, 'tomcat.jvm.gc-log.present', 'gcLog', 'GC 日志', 'GC 日志配置，确认日志路径可写且纳入运维留存。'),
-    httpPortRow(instance)
+    jvmRow(instance, 'tomcat.jvm.xms.present', 'xms', '-Xms', 'JVM 初始堆参数，按容量规划复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.xmx.present', 'xmx', '-Xmx', 'JVM 最大堆参数，按容量规划复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.gc.present', 'gc', 'GC', 'GC 选择参数，结合 Java 版本复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.gc-log.present', 'gcLog', 'GC 日志', 'GC 日志配置，确认日志路径可写且纳入运维留存。', legacyEol),
+    httpPortRow(instance, legacyEol)
   ];
 }
 
@@ -699,13 +864,13 @@ function getSupportedTomcatLine(version) {
   return null;
 }
 
-function jvmRow(instance, id, field, label, normalSuggestion) {
+function jvmRow(instance, id, field, label, normalSuggestion, legacyEol) {
   const trusted = instance.jvmStartup?.trusted === true;
   const value = instance.jvmStartup?.[field];
   if (trusted && value) {
     return {
       id,
-      conclusion: '正常',
+      conclusion: legacyEol ? '无法判断' : '正常',
       fact: `${label}：${value}`,
       suggestion: `已采集 ${normalSuggestion}`
     };
@@ -718,9 +883,9 @@ function jvmRow(instance, id, field, label, normalSuggestion) {
   };
 }
 
-function httpPortRow(instance) {
+function httpPortRow(instance, legacyEol) {
   const check = instance.checks.find(({ id }) => id === 'tomcat.http.port.present');
-  const conclusion = check?.observedValue ? '正常' : '无法判断';
+  const conclusion = check?.observedValue && !legacyEol ? '正常' : '无法判断';
   const fact = check?.observedValue ? `HTTP 端口：${check.observedValue}` : 'HTTP 端口：未采集';
   const suggestion = check?.observedValue
     ? '已采集到 Tomcat HTTP 端口，保持现有配置审查流程。'
