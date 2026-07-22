@@ -47,9 +47,9 @@ test('versioned rule catalog covers all six domains with reproducible rule contr
   assert.equal(new Set(ids).size, ids.length);
 });
 
-test('Tomcat 8.5, 9.0 and 10.1 have explicit reproducible version vectors while unsupported versions degrade', () => {
+test('Tomcat 8.5 is explicitly legacy EOL while 9.0 and 10.1 have reproducible version vectors', () => {
   assert.deepEqual(getTomcatVersionRuleVector('8.5.100'), {
-    status: 'supported', line: '8.5', javaMinimum: 7,
+    status: 'legacy_eol', line: '8.5', javaMinimum: 7,
     connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 }
   });
   assert.deepEqual(getTomcatVersionRuleVector('9.0.93'), {
@@ -100,14 +100,44 @@ test('structured and Markdown reports have fixed semantics, provenance and deter
   assert.doesNotMatch(report.markdown, /## 总体风险|## 总体健康等级|总体风险：|总体健康等级：/);
 });
 
-test('unsupported Tomcat report explicitly uses degraded rule semantics', async () => {
+test('unsupported Tomcat reports retain the report catalog but downgrade every non-support conclusion', async () => {
   const result = await generateTomcatMarkdownReport({
     selectedMiddleware: 'tomcat',
     pastedLogCarrier: carrier({ tomcatVersion: '11.0.0' }),
     generatedAt: '2026-07-21T01:02:03Z'
   });
+  const report = result.reports[0];
 
-  assert.deepEqual(result.reports[0].versionRuleVector, { status: 'unsupported', line: null });
-  assert.equal(result.reports[0].reportView.operatingMode, 'degraded');
-  assert.match(result.reports[0].markdown, /当前 Tomcat 版本不受规则集支持，报告已降级/);
+  assert.deepEqual(report.versionRuleVector, { status: 'unsupported', line: null });
+  assert.equal(report.reportView.operatingMode, 'degraded');
+  assert.deepEqual(report.reportView.checks.filter(({ id }) => id === 'tomcat.version.support').map(({ conclusion }) => conclusion), ['异常']);
+  assert.ok(report.reportView.checks.filter(({ id }) => id !== 'tomcat.version.support').every(({ conclusion }) => conclusion === '无法判断'));
+  assert.deepEqual(report.conclusionSummary, {
+    normal: 0, warning: 0, abnormal: 1, unknown: 13, notApplicable: 0
+  });
+  assert.match(report.markdown, /当前 Tomcat 版本不受规则集支持，报告已降级/);
+});
+
+test('Tomcat 8.5 legacy EOL does not claim conforming rules are normal', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: carrier({ tomcatVersion: '8.5.100' }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+  const report = result.reports[0];
+
+  assert.equal(report.versionRuleVector.status, 'legacy_eol');
+  assert.equal(report.reportView.operatingMode, 'degraded');
+  assert.ok(report.reportView.checks.every(({ conclusion }) => conclusion !== '正常'));
+  assert.deepEqual(report.reportView.checks.slice(0, 8).map(({ id, conclusion }) => ({ id, conclusion })), [
+    { id: 'tomcat.instance.identity.present', conclusion: '无法判断' },
+    { id: 'tomcat.version.support', conclusion: '异常' },
+    { id: 'tomcat.java.version.present', conclusion: '无法判断' },
+    { id: 'tomcat.jvm.xms.present', conclusion: '无法判断' },
+    { id: 'tomcat.jvm.xmx.present', conclusion: '无法判断' },
+    { id: 'tomcat.jvm.gc.present', conclusion: '无法判断' },
+    { id: 'tomcat.jvm.gc-log.present', conclusion: '无法判断' },
+    { id: 'tomcat.http.port.present', conclusion: '无法判断' }
+  ]);
+  assert.match(report.markdown, /Tomcat 8\.5 已停止维护，报告已降级/);
 });

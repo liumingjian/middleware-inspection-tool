@@ -7,7 +7,7 @@ export const LOG_BEGIN = '===TOMCAT_INSPECTION_JSON_BEGIN===';
 export const LOG_END = '===TOMCAT_INSPECTION_JSON_END===';
 
 const TOMCAT_VERSION_VECTORS = {
-  '8.5': { status: 'supported', line: '8.5', javaMinimum: 7, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
+  '8.5': { status: 'legacy_eol', line: '8.5', javaMinimum: 7, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
   '9.0': { status: 'supported', line: '9.0', javaMinimum: 8, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } },
   '10.1': { status: 'supported', line: '10.1', javaMinimum: 11, connectorDefaults: { maxThreads: 200, acceptCount: 100, connectionTimeout: 20000 } }
 };
@@ -133,9 +133,9 @@ export async function generateTomcatMarkdownReport({
     const securityChecks = buildSecurityChecks(instance.securityConfig);
     const deploymentChecks = buildDeploymentChecks(instance.deployments);
     const logChecks = buildLogChecks(instance.logTargets);
-    const checkRows = [...buildCheckRows(instance), ...hostResourceChecks, ...connectorChecks, ...securityChecks, ...deploymentChecks, ...logChecks];
-    const conclusionSummary = summarizeConclusions(checkRows);
     const versionRuleVector = getTomcatVersionRuleVector(instance.tomcatVersion);
+    const checkRows = buildVersionedCheckRows(instance, versionRuleVector, document);
+    const conclusionSummary = summarizeConclusions(checkRows);
     const provenance = buildProvenance(document, generatedAt);
     const reportView = buildReportView(versionRuleVector, conclusionSummary, checkRows, document.host.observations ?? [], provenance);
     reports.push({
@@ -433,6 +433,21 @@ function buildProvenance(document, generatedAt) {
   };
 }
 
+function buildVersionedCheckRows(instance, versionRuleVector, document) {
+  const rows = [
+    ...buildCheckRows(instance, versionRuleVector),
+    ...buildHostResourceChecks(document.host.resources),
+    ...buildConnectorChecks(instance.connectors, document.host.cpuCount),
+    ...buildSecurityChecks(instance.securityConfig),
+    ...buildDeploymentChecks(instance.deployments),
+    ...buildLogChecks(instance.logTargets)
+  ];
+  if (versionRuleVector.status !== 'unsupported' && versionRuleVector.status !== 'unknown') return rows;
+  return rows.map((row) => row.id === 'tomcat.version.support'
+    ? row
+    : { ...row, conclusion: '无法判断', suggestion: '当前 Tomcat 版本不受规则集支持；补充适用规则后人工核查。' });
+}
+
 function buildReportView(versionRuleVector, conclusionSummary, rows, observations, provenance) {
   const sections = [
     ['report-notes', '报告说明'],
@@ -449,6 +464,7 @@ function buildReportView(versionRuleVector, conclusionSummary, rows, observation
   ].map(([id, title]) => ({ id, title }));
   return {
     operatingMode: versionRuleVector.status === 'supported' ? 'normal' : 'degraded',
+    versionRuleVector,
     sections,
     conclusionSummary,
     checks: rows,
@@ -466,9 +482,11 @@ function renderMarkdownReport(document, instance, generatedAt, discoveryComplete
     : '未采集';
 
   const observations = renderHostObservations(document.host.observations ?? []);
-  const versionNotice = reportView.operatingMode === 'degraded'
-    ? '当前 Tomcat 版本不受规则集支持，报告已降级；适用性相关结论需人工复核。'
-    : '当前 Tomcat 版本使用已版本化的内置规则集。';
+  const versionNotice = reportView.versionRuleVector?.status === 'legacy_eol'
+    ? 'Tomcat 8.5 已停止维护，报告已降级；除已证明问题外，其余适用性相关结论需人工复核。'
+    : reportView.operatingMode === 'degraded'
+      ? '当前 Tomcat 版本不受规则集支持，报告已降级；适用性相关结论需人工复核。'
+      : '当前 Tomcat 版本使用已版本化的内置规则集。';
   const unknownRows = rows.filter(({ conclusion }) => conclusion === '无法判断');
 
   return `# Tomcat 单实例巡检报告
@@ -791,12 +809,14 @@ function renderHostObservations(observations) {
   return `## 观察指标（不参与结论计数）\n\n${lines.join('\n')}\n\n`;
 }
 
-function buildCheckRows(instance) {
+function buildCheckRows(instance, versionRuleVector) {
   const supportedLine = getSupportedTomcatLine(instance.tomcatVersion);
+  const legacyEol = versionRuleVector.status === 'legacy_eol';
+  const degradeConclusion = (conclusion) => legacyEol && conclusion === '正常' ? '无法判断' : conclusion;
   return [
     {
       id: 'tomcat.instance.identity.present',
-      conclusion: instance.instanceId && instance.pid && instance.catalinaBase ? '正常' : '无法判断',
+      conclusion: instance.instanceId && instance.pid && instance.catalinaBase ? degradeConclusion('正常') : '无法判断',
       fact: instance.instanceId ? `实例标识：${instance.instanceId}` : '实例标识：未采集',
       suggestion: instance.instanceId && instance.pid && instance.catalinaBase
         ? '已采集实例身份，按本次采集主机与进程号区分报告。'
@@ -804,31 +824,35 @@ function buildCheckRows(instance) {
     },
     {
       id: 'tomcat.version.support',
-      conclusion: supportedLine ? '正常' : instance.tomcatVersion ? '警告' : '无法判断',
-      fact: supportedLine
-        ? `Tomcat 版本：${instance.tomcatVersion}（支持 Tomcat ${supportedLine}）`
-        : instance.tomcatVersion
-          ? `Tomcat 版本：${instance.tomcatVersion}（不支持版本）`
-          : 'Tomcat 版本：未采集',
-      suggestion: supportedLine
-        ? '当前版本在 Tomcat MVP 支持范围内。'
-        : instance.tomcatVersion
-          ? 'Tomcat MVP 仅明确支持 8.5、9.0 和 10.1；不支持版本需人工确认适用规则。'
-          : '补充 Tomcat 版本后人工核查适用规则。'
+      conclusion: legacyEol ? '异常' : supportedLine ? '正常' : instance.tomcatVersion ? '异常' : '无法判断',
+      fact: legacyEol
+        ? `Tomcat 版本：${instance.tomcatVersion}（Tomcat 8.5 已停止维护）`
+        : supportedLine
+          ? `Tomcat 版本：${instance.tomcatVersion}（支持 Tomcat ${supportedLine}）`
+          : instance.tomcatVersion
+            ? `Tomcat 版本：${instance.tomcatVersion}（不支持版本）`
+            : 'Tomcat 版本：未采集',
+      suggestion: legacyEol
+        ? 'Tomcat 8.5 已停止维护；通过客户变更流程迁移至受支持版本。'
+        : supportedLine
+          ? '当前版本在 Tomcat MVP 支持范围内。'
+          : instance.tomcatVersion
+            ? 'Tomcat MVP 仅明确支持 9.0 和 10.1；不支持版本需人工确认适用规则。'
+            : '补充 Tomcat 版本后人工核查适用规则。'
     },
     {
       id: 'tomcat.java.version.present',
-      conclusion: instance.javaVersion ? '正常' : '无法判断',
+      conclusion: instance.javaVersion ? degradeConclusion('正常') : '无法判断',
       fact: instance.javaVersion ? `Java 版本：${instance.javaVersion}` : 'Java 版本：未采集',
       suggestion: instance.javaVersion
         ? '已采集 Java 版本，结合 Tomcat 版本继续复核兼容性。'
         : '补充 Java 版本后人工核查。'
     },
-    jvmRow(instance, 'tomcat.jvm.xms.present', 'xms', '-Xms', 'JVM 初始堆参数，按容量规划复核。'),
-    jvmRow(instance, 'tomcat.jvm.xmx.present', 'xmx', '-Xmx', 'JVM 最大堆参数，按容量规划复核。'),
-    jvmRow(instance, 'tomcat.jvm.gc.present', 'gc', 'GC', 'GC 选择参数，结合 Java 版本复核。'),
-    jvmRow(instance, 'tomcat.jvm.gc-log.present', 'gcLog', 'GC 日志', 'GC 日志配置，确认日志路径可写且纳入运维留存。'),
-    httpPortRow(instance)
+    jvmRow(instance, 'tomcat.jvm.xms.present', 'xms', '-Xms', 'JVM 初始堆参数，按容量规划复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.xmx.present', 'xmx', '-Xmx', 'JVM 最大堆参数，按容量规划复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.gc.present', 'gc', 'GC', 'GC 选择参数，结合 Java 版本复核。', legacyEol),
+    jvmRow(instance, 'tomcat.jvm.gc-log.present', 'gcLog', 'GC 日志', 'GC 日志配置，确认日志路径可写且纳入运维留存。', legacyEol),
+    httpPortRow(instance, legacyEol)
   ];
 }
 
@@ -840,13 +864,13 @@ function getSupportedTomcatLine(version) {
   return null;
 }
 
-function jvmRow(instance, id, field, label, normalSuggestion) {
+function jvmRow(instance, id, field, label, normalSuggestion, legacyEol) {
   const trusted = instance.jvmStartup?.trusted === true;
   const value = instance.jvmStartup?.[field];
   if (trusted && value) {
     return {
       id,
-      conclusion: '正常',
+      conclusion: legacyEol ? '无法判断' : '正常',
       fact: `${label}：${value}`,
       suggestion: `已采集 ${normalSuggestion}`
     };
@@ -859,9 +883,9 @@ function jvmRow(instance, id, field, label, normalSuggestion) {
   };
 }
 
-function httpPortRow(instance) {
+function httpPortRow(instance, legacyEol) {
   const check = instance.checks.find(({ id }) => id === 'tomcat.http.port.present');
-  const conclusion = check?.observedValue ? '正常' : '无法判断';
+  const conclusion = check?.observedValue && !legacyEol ? '正常' : '无法判断';
   const fact = check?.observedValue ? `HTTP 端口：${check.observedValue}` : 'HTTP 端口：未采集';
   const suggestion = check?.observedValue
     ? '已采集到 Tomcat HTTP 端口，保持现有配置审查流程。'
