@@ -67,6 +67,7 @@ export async function generateTomcatMarkdownReport({
     reports.push({
       instanceId: instance.instanceId,
       discoveryComplete,
+      limitations: discoveryComplete ? [] : ['实例发现途径受限或不可用，实例清单可能不完整。'],
       hostResourceChecks,
       connectorChecks,
       securityChecks,

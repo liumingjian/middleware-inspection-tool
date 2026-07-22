@@ -44,6 +44,53 @@ async function reopenDocx(buffer) {
   return { documentXml, paragraphs, tables };
 }
 
+test('a report session lists valid instances and navigates without losing independent edits', () => {
+  const firstMarkdown = generatedMarkdown;
+  const secondMarkdown = '# 第二份报告\n\n未修改。';
+  const session = createTomcatReportSession([
+    {
+      instanceId: 'host:1001',
+      markdown: firstMarkdown,
+      conclusionSummary: { normal: 2, warning: 1, abnormal: 0, unknown: 1, notApplicable: 0 },
+      limitations: ['实例发现可能不完整']
+    },
+    {
+      instanceId: 'host:1002',
+      markdown: secondMarkdown,
+      conclusionSummary: { normal: 1, warning: 0, abnormal: 1, unknown: 0, notApplicable: 1 },
+      limitations: []
+    }
+  ]);
+  const revised = generatedMarkdown.replace('正常', '异常');
+
+  assert.equal(session.getCurrentReport().instanceId, 'host:1001');
+  assert.deepEqual(session.listInstances(), [
+    {
+      instanceId: 'host:1001',
+      conclusionSummary: { normal: 2, warning: 1, abnormal: 0, unknown: 1, notApplicable: 0 },
+      limitations: ['实例发现可能不完整'],
+      revisionStatus: 'system-generated',
+      current: true
+    },
+    {
+      instanceId: 'host:1002',
+      conclusionSummary: { normal: 1, warning: 0, abnormal: 1, unknown: 0, notApplicable: 1 },
+      limitations: [],
+      revisionStatus: 'system-generated',
+      current: false
+    }
+  ]);
+
+  session.updateCurrentMarkdown(revised);
+  session.selectInstance('host:1002');
+  session.updateCurrentMarkdown('# 第二份报告\n\n第二份修订。');
+  session.selectInstance('host:1001');
+
+  assert.equal(session.getCurrentReport().markdown, revised);
+  assert.equal(session.getReport('host:1002').markdown, '# 第二份报告\n\n第二份修订。');
+  assert.equal(session.listInstances()[0].revisionStatus, 'user-revised');
+});
+
 test('a report session preserves independent Markdown edits and previews supported report structures', () => {
   const session = createTomcatReportSession([
     { instanceId: 'host:1001', markdown: generatedMarkdown },
@@ -60,6 +107,49 @@ test('a report session preserves independent Markdown edits and previews support
   assert.deepEqual(session.preview('host:1001').map(({ type }) => type), [
     'heading', 'paragraph', 'heading', 'list', 'table', 'blockquote'
   ]);
+});
+
+test('single export uses the currently selected instance and its current Markdown', async () => {
+  const session = createTomcatReportSession([
+    { instanceId: 'host:1001', markdown: generatedMarkdown },
+    { instanceId: 'host:1002', markdown: '# 第二份报告\n\n系统内容。' }
+  ]);
+  session.selectInstance('host:1002');
+  session.updateCurrentMarkdown('# 第二份报告\n\n当前修订内容。');
+
+  const exported = await session.exportCurrentDocx();
+  const reopened = await reopenDocx(exported.content);
+
+  assert.equal(exported.filename, 'tomcat-host-1002-user-revised.docx');
+  assert.ok(reopened.paragraphs.includes('当前修订内容。'));
+  assert.ok(!reopened.paragraphs.includes('系统内容。'));
+});
+
+test('batch export contains exactly one semantic DOCX per valid instance with stable collision-proof names', async () => {
+  const session = createTomcatReportSession([
+    { instanceId: 'host/a', markdown: generatedMarkdown },
+    { instanceId: 'host:a', markdown: '# 第二份报告\n\n系统保留内容。' }
+  ]);
+  const revised = generatedMarkdown.replace('系统生成说明。', '第一份用户修订内容。');
+  session.updateMarkdown('host/a', revised);
+
+  const exported = await session.exportAllDocxZip();
+  const archive = await JSZip.loadAsync(exported.content);
+  const filenames = Object.keys(archive.files).sort();
+
+  assert.equal(exported.filename, 'tomcat-instance-reports.zip');
+  assert.deepEqual(filenames, [
+    'tomcat-host-a-1-user-revised.docx',
+    'tomcat-host-a-2.docx'
+  ]);
+  assert.equal(filenames.filter((name) => name.endsWith('.docx')).length, 2);
+
+  const first = await reopenDocx(await archive.file('tomcat-host-a-1-user-revised.docx').async('nodebuffer'));
+  const second = await reopenDocx(await archive.file('tomcat-host-a-2.docx').async('nodebuffer'));
+  assert.ok(first.paragraphs.includes('第一份用户修订内容。'));
+  assert.ok(!first.paragraphs.includes('系统生成说明。'));
+  assert.ok(second.paragraphs.includes('系统保留内容。'));
+  assert.ok(!filenames.some((name) => /host|application|cluster|summary/i.test(name.replace(/^tomcat-host/, ''))));
 });
 
 test('DOCX export reopens with the current revised headings, paragraphs, lists and table semantics', async () => {

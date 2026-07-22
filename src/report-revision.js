@@ -1,3 +1,4 @@
+import JSZip from 'jszip';
 import {
   AlignmentType,
   Document,
@@ -24,11 +25,12 @@ export class MarkdownConversionError extends Error {
 }
 
 export function createTomcatReportSession(reports) {
-  const states = new Map(reports.map(({ instanceId, markdown }) => [instanceId, {
-    instanceId,
-    systemMarkdown: markdown,
-    markdown
+  const states = new Map(reports.map((report) => [report.instanceId, {
+    ...report,
+    systemMarkdown: report.markdown,
+    markdown: report.markdown
   }]));
+  let currentInstanceId = reports[0]?.instanceId;
 
   const getState = (instanceId) => {
     const state = states.get(instanceId);
@@ -36,23 +38,60 @@ export function createTomcatReportSession(reports) {
     return state;
   };
 
+  const reportState = (state) => ({
+    instanceId: state.instanceId,
+    markdown: state.markdown,
+    revisionStatus: state.markdown === state.systemMarkdown ? 'system-generated' : 'user-revised'
+  });
+
   return {
+    listInstances() {
+      return [...states.values()].map((state) => ({
+        instanceId: state.instanceId,
+        conclusionSummary: state.conclusionSummary,
+        limitations: state.limitations ?? [],
+        revisionStatus: state.markdown === state.systemMarkdown ? 'system-generated' : 'user-revised',
+        current: state.instanceId === currentInstanceId
+      }));
+    },
+    selectInstance(instanceId) {
+      getState(instanceId);
+      currentInstanceId = instanceId;
+    },
+    updateCurrentMarkdown(markdown) {
+      getState(currentInstanceId).markdown = markdown;
+    },
+    getCurrentReport() {
+      return reportState(getState(currentInstanceId));
+    },
     updateMarkdown(instanceId, markdown) {
       getState(instanceId).markdown = markdown;
     },
     getReport(instanceId) {
-      const state = getState(instanceId);
-      return {
-        instanceId,
-        markdown: state.markdown,
-        revisionStatus: state.markdown === state.systemMarkdown ? 'system-generated' : 'user-revised'
-      };
+      return reportState(getState(instanceId));
     },
     preview(instanceId) {
       return previewTomcatMarkdown(getState(instanceId).markdown);
     },
     exportDocx(instanceId) {
       return exportTomcatDocx(getState(instanceId));
+    },
+    exportCurrentDocx() {
+      return exportTomcatDocx(getState(currentInstanceId));
+    },
+    async exportAllDocxZip() {
+      const archive = new JSZip();
+      let sequence = 0;
+      for (const state of states.values()) {
+        sequence += 1;
+        const exported = await exportTomcatDocx(state);
+        const revisedSuffix = exported.reportType === 'user-revised' ? '-user-revised' : '';
+        archive.file(`tomcat-${safeFilename(state.instanceId)}-${sequence}${revisedSuffix}.docx`, exported.content);
+      }
+      return {
+        filename: 'tomcat-instance-reports.zip',
+        content: await archive.generateAsync({ type: 'nodebuffer' })
+      };
     }
   };
 }

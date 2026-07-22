@@ -160,6 +160,7 @@ test('incomplete discovery remains visible in the instance list and every genera
   assert.equal(result.discoveryComplete, false);
   assert.deepEqual(result.discovery, discovery);
   assert.equal(result.reports[0].discoveryComplete, false);
+  assert.deepEqual(result.reports[0].limitations, ['实例发现途径受限或不可用，实例清单可能不完整。']);
   assert.match(result.reports[0].markdown, /## 实例发现覆盖范围/);
   assert.match(result.reports[0].markdown, /ps：受限（只能查看当前用户进程）/);
   assert.match(result.reports[0].markdown, /systemd：不可用（systemctl 不可用）/);
