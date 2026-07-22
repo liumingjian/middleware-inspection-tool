@@ -52,12 +52,21 @@ export async function generateTomcatMarkdownReport({
   const discoveryComplete = discovery.every(({ status }) => status === 'success');
   const reports = [];
   const invalidInstances = [];
+  const validInstanceIds = new Set();
   document.instances.forEach((instance, index) => {
     const reasons = validateInstance(instance, index);
+    if (reasons.length === 0 && validInstanceIds.has(instance.instanceId)) {
+      reasons.push({
+        path: `instances[${index}].instanceId`,
+        code: 'INSTANCE_ID_DUPLICATE',
+        message: '实例标识在本次采集中必须唯一。'
+      });
+    }
     if (reasons.length > 0) {
       invalidInstances.push({ index, instanceId: instance?.instanceId ?? null, reasons });
       return;
     }
+    validInstanceIds.add(instance.instanceId);
     const hostResourceChecks = buildHostResourceChecks(document.host.resources);
     const connectorChecks = buildConnectorChecks(instance.connectors, document.host.cpuCount);
     const securityChecks = buildSecurityChecks(instance.securityConfig);
