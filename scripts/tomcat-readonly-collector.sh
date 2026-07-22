@@ -56,14 +56,24 @@ jvm_gc_log() {
   printf '%s' "$value"
 }
 
+redact_jvm_arg() {
+  local arg="$1" lower="${1,,}"
+  if [[ "$lower" == *=* && "$lower" =~ (password|passwd|secret|token|cookie|authorization|credential|keystorepass|keypass|apikey|api-key|accesskey|access-key|jdbc:) ]]; then
+    printf '%s=[REDACTED]' "${arg%%=*}"
+  else
+    printf '%s' "$arg"
+  fi
+}
+
 json_args() {
-  local args_text="$1" arg first=true
+  local args_text="$1" arg safe_arg first=true
   local -a args=()
   read -r -a args <<< "$args_text"
   printf '['
   for arg in "${args[@]}"; do
     if [[ "$first" == false ]]; then printf ','; fi
-    json_string "$arg"
+    safe_arg=$(redact_jvm_arg "$arg")
+    json_string "$safe_arg"
     first=false
   done
   printf ']'
@@ -198,6 +208,20 @@ emit_connectors() {
   printf ']'
 }
 
+emit_security_config() {
+  local status="${TOMCAT_INSPECTOR_SECURITY_STATUS:-unavailable}"
+  printf '{"status":'; json_string "$status"
+  printf ',"source":"local-static-config"'
+  if [[ "$status" == success ]]; then
+    printf ',"directoryListingEnabled":%s' "${TOMCAT_INSPECTOR_DIRECTORY_LISTING_ENABLED:-null}"
+    printf ',"autoDeployEnabled":%s' "${TOMCAT_INSPECTOR_AUTO_DEPLOY_ENABLED:-null}"
+    printf ',"serverInfoExposed":%s' "${TOMCAT_INSPECTOR_SERVER_INFO_EXPOSED:-null}"
+    printf ',"shutdownPort":%s' "${TOMCAT_INSPECTOR_SHUTDOWN_PORT:-null}"
+    printf ',"tlsConnectorPresent":%s' "${TOMCAT_INSPECTOR_TLS_CONNECTOR_PRESENT:-null}"
+  fi
+  printf '}'
+}
+
 emit_instance() {
   local pid="$1" catalina_base="$2" tomcat_version="$3" java_version="$4" args_text="$5" http_port="$6"
   local instance_id="${host_ip}:${pid}"
@@ -221,7 +245,8 @@ emit_instance() {
   printf ',"xmx":'; json_string "$xmx"
   printf ',"gc":'; json_string "$gc"
   printf ',"gcLog":'; json_string "$gc_log"
-  printf '},"connectors":'; emit_connectors
+  printf '} ,"connectors":'; emit_connectors
+  printf ',"securityConfig":'; emit_security_config
   printf ',"httpPort":%s,"checks":[' "$http_port"
   printf '{"id":"tomcat.instance.identity.present","observedValue":'; json_string "$instance_id"; printf ',"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},'
   printf '{"id":"tomcat.version.support","observedValue":'; json_string "$tomcat_version"; printf ',"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},'

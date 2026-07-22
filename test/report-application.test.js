@@ -246,7 +246,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
     normal: 9,
     warning: 1,
     abnormal: 1,
-    unknown: 1,
+    unknown: 2,
     notApplicable: 0
   });
   assert.deepEqual(result.reports[0].hostResourceChecks, [
@@ -256,7 +256,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
   ]);
   const markdown = result.reports[0].markdown;
   assert.match(markdown, /## 结论摘要/);
-  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：1；不适用：0/);
+  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：2；不适用：0/);
   assert.match(markdown, /## 主机资源域/);
   assert.match(markdown, /host\.disk\.capacity \| 异常/);
   assert.match(markdown, /## 观察指标（不参与结论计数）/);
@@ -282,7 +282,7 @@ test('report generation marks applicable host capacity checks unknown when minim
   });
 
   assert.deepEqual(result.reports[0].hostResourceChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
   assert.match(result.reports[0].markdown, /host\.memory\.available \| 无法判断 \| 采集状态：unreliable；来源：\/proc\/meminfo:MemAvailable/);
   assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
 });
@@ -298,7 +298,7 @@ test('report generation marks missing host resource facts unknown instead of omi
     { id: 'host.inode.capacity', conclusion: '无法判断' },
     { id: 'host.memory.available', conclusion: '无法判断' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
 });
 
 test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
@@ -361,7 +361,7 @@ test('report marks uncollected Connector configuration unknown instead of omitti
   assert.deepEqual(result.reports[0].connectorChecks.map(({ id, conclusion, semantics }) => ({ id, conclusion, semantics })), [
     { id: 'tomcat.connector.configuration', conclusion: '无法判断', semantics: 'minimum-evidence' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 5);
   assert.match(result.reports[0].markdown, /采集状态：unavailable；证据：未采集 Connector 配置事实/);
 });
 
@@ -437,6 +437,62 @@ test('report rejects malformed Connector value-source facts at the boundary', as
       connectionTimeout: { value: 20000, source: 'explicit' }
     }] })
   }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].connectors[0].port');
+});
+
+test('report renders deterministic static security rules across all conclusion states without claiming a complete assessment', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({
+      securityConfig: {
+        status: 'success',
+        source: 'local-static-config',
+        directoryListingEnabled: true,
+        autoDeployEnabled: true,
+        serverInfoExposed: false,
+        shutdownPort: -1,
+        tlsConnectorPresent: false
+      }
+    })
+  });
+
+  assert.deepEqual(result.reports[0].securityChecks.map(({ id, conclusion }) => ({ id, conclusion })), [
+    { id: 'tomcat.security.directory-listing', conclusion: '异常' },
+    { id: 'tomcat.security.auto-deploy', conclusion: '警告' },
+    { id: 'tomcat.security.server-info', conclusion: '正常' },
+    { id: 'tomcat.security.shutdown-port', conclusion: '正常' },
+    { id: 'tomcat.security.tls-connector', conclusion: '不适用' }
+  ]);
+  const markdown = result.reports[0].markdown;
+  assert.match(markdown, /## 静态配置安全域/);
+  assert.match(markdown, /tomcat\.security\.directory-listing \| 异常/);
+  assert.match(markdown, /先核查应用依赖并通过客户变更流程关闭目录列表/);
+  assert.doesNotMatch(markdown, /(?:sed|curl|chmod|systemctl)\s/);
+  assert.match(markdown, /仅覆盖本地静态配置基线，不执行 CVE 匹配、主动探测或登录尝试，也不构成完整安全评估/);
+});
+
+test('report marks unreadable security configuration unknown with minimum evidence', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ securityConfig: { status: 'restricted', source: 'local-static-config' } })
+  });
+
+  assert.deepEqual(result.reports[0].securityChecks, [{
+    id: 'tomcat.security.configuration',
+    domain: 'static-security',
+    conclusion: '无法判断',
+    evidence: '采集状态：restricted；来源：local-static-config',
+    suggestion: '补充可读的本地静态安全配置事实后人工核查。'
+  }]);
+});
+
+test('report rejects malformed security configuration facts at the boundary', async () => {
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ securityConfig: {
+      status: 'success', source: 'local-static-config', directoryListingEnabled: 'false',
+      autoDeployEnabled: false, serverInfoExposed: false, shutdownPort: -1, tlsConnectorPresent: true
+    } })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].securityConfig');
 });
 
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {

@@ -66,6 +66,7 @@ test('collector process emits one bounded Tomcat log document for the controlled
       gcLog: '/var/log/tomcat/gc.log'
     },
     connectors: [],
+    securityConfig: { status: 'unavailable', source: 'local-static-config' },
     httpPort: 8080,
     checks: [
       {
@@ -238,6 +239,64 @@ test('collector degrades unavailable host facts independently without guessed va
   assert.equal(Object.hasOwn(resources.disk, 'available'), false);
   assert.equal(Object.hasOwn(resources.inode, 'available'), false);
   assert.equal(Object.hasOwn(resources.memory, 'available'), false);
+});
+
+test('collector emits only bounded Tomcat security facts and redacts sensitive JVM argument values', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_FIXED_TIME: '2026-07-21T00:00:00Z',
+      TOMCAT_INSPECTOR_JVM_ARGS: '-Xmx1g -Ddb.password=top-secret -DapiToken=token-value -DapiKey=key-value -Daws.accessKeyId=access-key-value -Dcookie=session-value -Dauthorization=Bearer-secret -Djavax.net.ssl.keyStorePassword=key-secret -Ddb.url=jdbc:mysql://db/app?user=alice&password=url-secret',
+      TOMCAT_INSPECTOR_SECURITY_STATUS: 'success',
+      TOMCAT_INSPECTOR_DIRECTORY_LISTING_ENABLED: 'false',
+      TOMCAT_INSPECTOR_AUTO_DEPLOY_ENABLED: 'true',
+      TOMCAT_INSPECTOR_SERVER_INFO_EXPOSED: 'false',
+      TOMCAT_INSPECTOR_SHUTDOWN_PORT: '8005',
+      TOMCAT_INSPECTOR_TLS_CONNECTOR_PRESENT: 'false',
+      TOMCAT_INSPECTOR_SECURITY_NOTES: 'unbounded text password=must-not-appear'
+    }
+  });
+
+  assert.doesNotMatch(output, /top-secret|token-value|key-value|access-key-value|session-value|Bearer-secret|key-secret|url-secret|must-not-appear/);
+  const instance = parseCollectorOutput(output).instances[0];
+  assert.deepEqual(instance.jvmStartup.args, [
+    '-Xmx1g',
+    '-Ddb.password=[REDACTED]',
+    '-DapiToken=[REDACTED]',
+    '-DapiKey=[REDACTED]',
+    '-Daws.accessKeyId=[REDACTED]',
+    '-Dcookie=[REDACTED]',
+    '-Dauthorization=[REDACTED]',
+    '-Djavax.net.ssl.keyStorePassword=[REDACTED]',
+    '-Ddb.url=[REDACTED]'
+  ]);
+  assert.deepEqual(instance.securityConfig, {
+    status: 'success',
+    source: 'local-static-config',
+    directoryListingEnabled: false,
+    autoDeployEnabled: true,
+    serverInfoExposed: false,
+    shutdownPort: 8005,
+    tlsConnectorPresent: false
+  });
+});
+
+test('collector reports unavailable security configuration without accepting free-text evidence', () => {
+  const output = execFileSync('bash', [scriptPath.pathname], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      TOMCAT_INSPECTOR_SECURITY_STATUS: 'restricted',
+      TOMCAT_INSPECTOR_SECURITY_NOTES: 'Authorization: secret'
+    }
+  });
+
+  assert.deepEqual(parseCollectorOutput(output).instances[0].securityConfig, {
+    status: 'restricted',
+    source: 'local-static-config'
+  });
+  assert.doesNotMatch(output, /Authorization: secret/);
 });
 
 test('collector script stays within the read-only collection boundary', () => {
