@@ -165,6 +165,10 @@ function parseMarkdown(markdown) {
 
     if (looksLikeTable(lines, index)) {
       const header = splitTableRow(lines[index]);
+      const separator = splitTableRow(lines[index + 1]);
+      if (separator.length !== header.length) {
+        throw new MarkdownConversionError('MARKDOWN_TABLE_INVALID', index + 2, 'Markdown 表格列数不一致，无法无损转换。');
+      }
       index += 2;
       const rows = [];
       while (index < lines.length && /^\s*\|.*\|\s*$/.test(lines[index])) {
@@ -210,7 +214,9 @@ function splitTableRow(line) {
 }
 
 function parseInline(text, line) {
-  if (/`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~/.test(text)) unsupported(line, '行内代码、链接或删除线');
+  if (/`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~|\*\*[^*]+\*\*|__[^_]+__|(?<!\*)\*[^*]+\*(?!\*)|(?<!_)_[^_]+_(?!_)/.test(text)) {
+    unsupported(line, '行内代码、链接、删除线或强调格式');
+  }
   return text;
 }
 

@@ -121,7 +121,8 @@ test('all promised lossy structures and malformed tables fail at their source li
   const invalidCases = [
     ['# 报告\n\n![拓扑](topology.png)', 'MARKDOWN_STRUCTURE_UNSUPPORTED', 3],
     ['# 报告\n\n<div>内容</div>', 'MARKDOWN_STRUCTURE_UNSUPPORTED', 3],
-    ['# 报告\n\n| A | B |\n| --- | --- |\n| only-one |', 'MARKDOWN_TABLE_INVALID', 5],
+    ['# 报告\n\n| A | B |\n| --- | --- | --- |\n| first | second |', 'MARKDOWN_TABLE_INVALID', 4],
+    ['# 报告\n\n**需要加粗的结论**', 'MARKDOWN_STRUCTURE_UNSUPPORTED', 3],
     ['# 报告\n\n    - 嵌套项', 'MARKDOWN_STRUCTURE_UNSUPPORTED', 3]
   ];
 
