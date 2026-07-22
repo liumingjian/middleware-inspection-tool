@@ -221,6 +221,137 @@ test('report generation produces per-item unknown conclusions when JVM startup e
   assert.match(markdown, /tomcat\.jvm\.gc-log\.present \| 无法判断 \| GC 日志：未采集 \| 补充可信 JVM 启动参数来源后人工核查。/);
 });
 
+test('report generation analyzes reliable host capacity facts and excludes observations from conclusion counts', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      host: {
+        hostname: 'demo-host',
+        ip: '192.0.2.10',
+        resources: {
+          disk: { status: 'success', source: 'df -Pk /opt', unit: 'bytes', mount: '/opt', total: 1000, available: 50, usedPercent: 95 },
+          inode: { status: 'success', source: 'df -Pi /opt', unit: 'inodes', mount: '/opt', total: 1000, available: 150, usedPercent: 85 },
+          memory: { status: 'success', source: '/proc/meminfo:MemAvailable', unit: 'bytes', total: 1000, available: 250, usedPercent: 75 }
+        },
+        observations: [
+          { id: 'host.cpu.instantaneous', status: 'success', source: 'snapshot', unit: 'percent', value: 99 },
+          { id: 'host.load.instantaneous', status: 'success', source: 'snapshot', unit: 'load', value: 8.5 }
+        ]
+      }
+    }),
+    generatedAt: '2026-07-21T01:02:03Z'
+  });
+
+  assert.deepEqual(result.reports[0].conclusionSummary, {
+    normal: 9,
+    warning: 1,
+    abnormal: 1,
+    unknown: 0,
+    notApplicable: 0
+  });
+  assert.deepEqual(result.reports[0].hostResourceChecks, [
+    { id: 'host.disk.capacity', domain: 'host-resources', conclusion: '异常', evidence: '挂载点 /opt，已用 95%，可用 50 bytes（df -Pk /opt）', suggestion: '评估并释放磁盘空间或扩容；变更前完成影响评估、备份并遵循客户变更流程。' },
+    { id: 'host.inode.capacity', domain: 'host-resources', conclusion: '警告', evidence: '挂载点 /opt，已用 85%，可用 150 inodes（df -Pi /opt）', suggestion: '核查 inode 消耗来源并规划清理或扩容；变更前完成影响评估、备份并遵循客户变更流程。' },
+    { id: 'host.memory.available', domain: 'host-resources', conclusion: '正常', evidence: '可用内存 250 bytes，占总量 25%（/proc/meminfo:MemAvailable）', suggestion: '可用内存容量满足当前静态基线，继续结合长期监控评估。' }
+  ]);
+  const markdown = result.reports[0].markdown;
+  assert.match(markdown, /## 结论摘要/);
+  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：0；不适用：0/);
+  assert.match(markdown, /## 主机资源域/);
+  assert.match(markdown, /host\.disk\.capacity \| 异常/);
+  assert.match(markdown, /## 观察指标（不参与结论计数）/);
+  assert.match(markdown, /host\.cpu\.instantaneous：99 percent/);
+  assert.match(markdown, /host\.load\.instantaneous：8\.5 load/);
+});
+
+test('report generation marks applicable host capacity checks unknown when minimum evidence is unavailable', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({}, {
+      host: {
+        hostname: 'demo-host',
+        ip: '192.0.2.10',
+        resources: {
+          disk: { status: 'restricted', source: 'df -Pk /opt', unit: 'bytes' },
+          inode: { status: 'unavailable', source: 'df -Pi /opt', unit: 'inodes' },
+          memory: { status: 'unreliable', source: '/proc/meminfo:MemAvailable', unit: 'bytes' }
+        },
+        observations: []
+      }
+    })
+  });
+
+  assert.deepEqual(result.reports[0].hostResourceChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+  assert.match(result.reports[0].markdown, /host\.memory\.available \| 无法判断 \| 采集状态：unreliable；来源：\/proc\/meminfo:MemAvailable/);
+  assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
+});
+
+test('report generation marks missing host resource facts unknown instead of omitting applicable checks', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({})
+  });
+
+  assert.deepEqual(result.reports[0].hostResourceChecks.map(({ id, conclusion }) => ({ id, conclusion })), [
+    { id: 'host.disk.capacity', conclusion: '无法判断' },
+    { id: 'host.inode.capacity', conclusion: '无法判断' },
+    { id: 'host.memory.available', conclusion: '无法判断' }
+  ]);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+});
+
+test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
+  const invalidHosts = [
+    {
+      resources: {
+        disk: { status: 'success', source: 'df', unit: 'bytes', mount: '/opt', total: 1000, available: 1001, usedPercent: 0 },
+        inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+        memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+      },
+      observations: []
+    },
+    {
+      resources: {
+        disk: { status: 'unavailable', source: 'df', unit: 'bytes' },
+        inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+        memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+      },
+      observations: [{ id: 'host.cpu.instantaneous', status: 'success', source: 'snapshot', unit: 'percent' }]
+    }
+  ];
+  for (const host of invalidHosts) {
+    await assert.rejects(
+      generateTomcatMarkdownReport({
+        selectedMiddleware: 'tomcat',
+        pastedLogCarrier: buildCarrier({}, { host: { hostname: 'demo-host', ip: '192.0.2.10', ...host } })
+      }),
+      (error) => error.code === 'DOCUMENT_SCHEMA_INVALID'
+    );
+  }
+});
+
+test('report generation rejects malformed host resource facts at the report boundary', async () => {
+  await assert.rejects(
+    generateTomcatMarkdownReport({
+      selectedMiddleware: 'tomcat',
+      pastedLogCarrier: buildCarrier({}, {
+        host: {
+          hostname: 'demo-host',
+          ip: '192.0.2.10',
+          resources: {
+            disk: { status: 'success', source: 'df', unit: 'bytes', total: 1000, available: 50 },
+            inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+            memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+          },
+          observations: []
+        }
+      })
+    }),
+    (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'host.resources.disk'
+  );
+});
+
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {
   await assert.rejects(
     generateTomcatMarkdownReport({ pastedLogCarrier: sampleLog }),

@@ -69,6 +69,96 @@ json_args() {
   printf ']'
 }
 
+collect_disk_fact() {
+  command -v df >/dev/null 2>&1 || return 2
+  local line blocks available used mount
+  line=$(df -Pk /opt 2>/dev/null | tail -n 1) || return 1
+  read -r _ blocks _ available used mount <<< "$line"
+  [[ "$blocks" =~ ^[0-9]+$ && "$available" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+%$ ]] || return 3
+  printf '%s|%s|%s|%s' "$mount" "$((blocks * 1024))" "$((available * 1024))" "${used%%%}"
+}
+
+collect_inode_fact() {
+  command -v df >/dev/null 2>&1 || return 2
+  local line total available used mount
+  line=$(df -Pi /opt 2>/dev/null | tail -n 1) || return 1
+  read -r _ total _ available used mount <<< "$line"
+  [[ "$total" =~ ^[0-9]+$ && "$available" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+%$ ]] || return 3
+  printf '%s|%s|%s|%s' "$mount" "$total" "$available" "${used%%%}"
+}
+
+collect_memory_fact() {
+  [[ -r /proc/meminfo ]] || return 1
+  local total_kb available_kb used_percent
+  total_kb=$(grep '^MemTotal:' /proc/meminfo | tr -cd '0-9')
+  available_kb=$(grep '^MemAvailable:' /proc/meminfo | tr -cd '0-9')
+  [[ "$total_kb" =~ ^[0-9]+$ && "$available_kb" =~ ^[0-9]+$ && "$total_kb" -gt 0 ]] || return 3
+  used_percent=$(( (total_kb - available_kb) * 100 / total_kb ))
+  printf '%s|%s|%s' "$((total_kb * 1024))" "$((available_kb * 1024))" "$used_percent"
+}
+
+resolve_fact() {
+  local kind="$1" value_variable="TOMCAT_INSPECTOR_${1^^}_FACT" status_variable="TOMCAT_INSPECTOR_${1^^}_STATUS"
+  local value="${!value_variable:-}" status="${!status_variable:-}" rc=0
+  if [[ -z "$status" && -z "$value" ]]; then
+    value=$("collect_${kind}_fact") || rc=$?
+    case "$rc" in 0) status=success ;; 1) status=restricted ;; 2) status=unavailable ;; *) status=unreliable ;; esac
+  elif [[ -z "$status" ]]; then
+    status=success
+  fi
+  printf '%s\n%s' "$status" "$value"
+}
+
+emit_capacity_fact() {
+  local kind="$1" status="$2" source="$3" unit="$4" value="$5"
+  local mount total available used_percent
+  printf '{"status":'; json_string "$status"
+  printf ',"source":'; json_string "$source"
+  printf ',"unit":'; json_string "$unit"
+  if [[ "$status" == success && -n "$value" ]]; then
+    if [[ "$kind" == memory ]]; then
+      IFS='|' read -r total available used_percent <<< "$value"
+    else
+      IFS='|' read -r mount total available used_percent <<< "$value"
+      printf ',"mount":'; json_string "$mount"
+    fi
+    printf ',"total":%s,"available":%s,"usedPercent":%s' "$total" "$available" "$used_percent"
+  fi
+  printf '}'
+}
+
+emit_host_resources() {
+  local disk_result inode_result memory_result disk_status inode_status memory_status
+  local disk_value inode_value memory_value
+  disk_result=$(resolve_fact disk); disk_status=${disk_result%%$'\n'*}; disk_value=${disk_result#*$'\n'}
+  inode_result=$(resolve_fact inode); inode_status=${inode_result%%$'\n'*}; inode_value=${inode_result#*$'\n'}
+  memory_result=$(resolve_fact memory); memory_status=${memory_result%%$'\n'*}; memory_value=${memory_result#*$'\n'}
+  printf '{"disk":'; emit_capacity_fact disk "$disk_status" 'df -Pk /opt' bytes "$disk_value"
+  printf ',"inode":'; emit_capacity_fact inode "$inode_status" 'df -Pi /opt' inodes "$inode_value"
+  printf ',"memory":'; emit_capacity_fact memory "$memory_status" '/proc/meminfo:MemAvailable' bytes "$memory_value"
+  printf '}'
+}
+
+emit_observations() {
+  local first=true id unit value variable
+  printf '['
+  for variable in CPU LOAD PROCESS_MEMORY; do
+    case "$variable" in
+      CPU) id='host.cpu.instantaneous'; unit='percent' ;;
+      LOAD) id='host.load.instantaneous'; unit='load' ;;
+      PROCESS_MEMORY) id='host.process-memory.instantaneous'; unit='bytes' ;;
+    esac
+    value="$(eval "printf '%s' \"\${TOMCAT_INSPECTOR_${variable}_OBSERVATION:-}\"")"
+    [[ -z "$value" ]] && continue
+    if [[ "$first" == false ]]; then printf ','; fi
+    printf '{"id":'; json_string "$id"
+    printf ',"status":"success","source":"snapshot","unit":'; json_string "$unit"
+    printf ',"value":%s}' "$value"
+    first=false
+  done
+  printf ']'
+}
+
 emit_instance() {
   local pid="$1" catalina_base="$2" tomcat_version="$3" java_version="$4" args_text="$5" http_port="$6"
   local instance_id="${host_ip}:${pid}"
@@ -139,6 +229,8 @@ printf ',"collectorVersion":'; json_string "$collector_version"
 printf ',"collectedAt":'; json_string "$collected_at"
 printf ',"host":{"hostname":'; json_string "$hostname_value"
 printf ',"ip":'; json_string "$host_ip"
+printf ',"resources":'; emit_host_resources
+printf ',"observations":'; emit_observations
 printf '},"discovery":'
 emit_discovery "${TOMCAT_INSPECTOR_DISCOVERY:-$default_discovery}"
 printf ',"instances":['
