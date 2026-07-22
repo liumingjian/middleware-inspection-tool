@@ -127,6 +127,16 @@ emit_capacity_fact() {
   printf '}'
 }
 
+resolve_cpu_count() {
+  local cpu_count="${TOMCAT_INSPECTOR_CPU_COUNT:-}"
+  if [[ -z "$cpu_count" ]] && command -v getconf >/dev/null 2>&1; then
+    cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)
+  fi
+  if [[ "$cpu_count" =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s' "$cpu_count"
+  fi
+}
+
 emit_host_resources() {
   local disk_result inode_result memory_result disk_status inode_status memory_status
   local disk_value inode_value memory_value
@@ -159,6 +169,35 @@ emit_observations() {
   printf ']'
 }
 
+emit_value_fact() {
+  local value="$1" source="$2"
+  printf '{"value":%s,"source":' "$value"; json_string "$source"; printf '}'
+}
+
+emit_connectors() {
+  local entry status evidence protocol port port_source executor max_threads max_threads_source accept_count accept_count_source timeout timeout_source first=true
+  printf '['
+  IFS=';' read -r -a entries <<< "${TOMCAT_INSPECTOR_CONNECTORS:-}"
+  for entry in "${entries[@]}"; do
+    [[ -z "$entry" ]] && continue
+    IFS='|' read -r status evidence protocol port port_source executor max_threads max_threads_source accept_count accept_count_source timeout timeout_source <<< "$entry"
+    if [[ "$first" == false ]]; then printf ','; fi
+    printf '{"status":'; json_string "$status"
+    printf ',"evidence":'; json_string "$evidence"
+    if [[ "$status" == success ]]; then
+      printf ',"protocolHandler":'; json_string "$protocol"
+      printf ',"port":'; emit_value_fact "$port" "$port_source"
+      printf ',"executor":'; json_string "$executor"
+      printf ',"maxThreads":'; emit_value_fact "$max_threads" "$max_threads_source"
+      printf ',"acceptCount":'; emit_value_fact "$accept_count" "$accept_count_source"
+      printf ',"connectionTimeout":'; emit_value_fact "$timeout" "$timeout_source"
+    fi
+    printf '}'
+    first=false
+  done
+  printf ']'
+}
+
 emit_instance() {
   local pid="$1" catalina_base="$2" tomcat_version="$3" java_version="$4" args_text="$5" http_port="$6"
   local instance_id="${host_ip}:${pid}"
@@ -182,7 +221,8 @@ emit_instance() {
   printf ',"xmx":'; json_string "$xmx"
   printf ',"gc":'; json_string "$gc"
   printf ',"gcLog":'; json_string "$gc_log"
-  printf '},"httpPort":%s,"checks":[' "$http_port"
+  printf '},"connectors":'; emit_connectors
+  printf ',"httpPort":%s,"checks":[' "$http_port"
   printf '{"id":"tomcat.instance.identity.present","observedValue":'; json_string "$instance_id"; printf ',"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},'
   printf '{"id":"tomcat.version.support","observedValue":'; json_string "$tomcat_version"; printf ',"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},'
   printf '{"id":"tomcat.java.version.present","observedValue":'; json_string "$java_version"; printf ',"evidence":"TOMCAT_INSPECTOR_JAVA_VERSION"},'
@@ -229,6 +269,8 @@ printf ',"collectorVersion":'; json_string "$collector_version"
 printf ',"collectedAt":'; json_string "$collected_at"
 printf ',"host":{"hostname":'; json_string "$hostname_value"
 printf ',"ip":'; json_string "$host_ip"
+cpu_count=$(resolve_cpu_count)
+if [[ -n "$cpu_count" ]]; then printf ',"cpuCount":%s' "$cpu_count"; fi
 printf ',"resources":'; emit_host_resources
 printf ',"observations":'; emit_observations
 printf '},"discovery":'

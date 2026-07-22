@@ -246,7 +246,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
     normal: 9,
     warning: 1,
     abnormal: 1,
-    unknown: 0,
+    unknown: 1,
     notApplicable: 0
   });
   assert.deepEqual(result.reports[0].hostResourceChecks, [
@@ -256,7 +256,7 @@ test('report generation analyzes reliable host capacity facts and excludes obser
   ]);
   const markdown = result.reports[0].markdown;
   assert.match(markdown, /## 结论摘要/);
-  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：0；不适用：0/);
+  assert.match(markdown, /正常：9；警告：1；异常：1；无法判断：1；不适用：0/);
   assert.match(markdown, /## 主机资源域/);
   assert.match(markdown, /host\.disk\.capacity \| 异常/);
   assert.match(markdown, /## 观察指标（不参与结论计数）/);
@@ -282,7 +282,7 @@ test('report generation marks applicable host capacity checks unknown when minim
   });
 
   assert.deepEqual(result.reports[0].hostResourceChecks.map(({ conclusion }) => conclusion), ['无法判断', '无法判断', '无法判断']);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
   assert.match(result.reports[0].markdown, /host\.memory\.available \| 无法判断 \| 采集状态：unreliable；来源：\/proc\/meminfo:MemAvailable/);
   assert.doesNotMatch(result.reports[0].markdown, /host\.memory\.available \| 正常/);
 });
@@ -298,7 +298,7 @@ test('report generation marks missing host resource facts unknown instead of omi
     { id: 'host.inode.capacity', conclusion: '无法判断' },
     { id: 'host.memory.available', conclusion: '无法判断' }
   ]);
-  assert.equal(result.reports[0].conclusionSummary.unknown, 3);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
 });
 
 test('report generation rejects malformed observations and inconsistent capacity facts at the report boundary', async () => {
@@ -350,6 +350,93 @@ test('report generation rejects malformed host resource facts at the report boun
     }),
     (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'host.resources.disk'
   );
+});
+
+test('report marks uncollected Connector configuration unknown instead of omitting the domain', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ connectors: [] })
+  });
+
+  assert.deepEqual(result.reports[0].connectorChecks.map(({ id, conclusion, semantics }) => ({ id, conclusion, semantics })), [
+    { id: 'tomcat.connector.configuration', conclusion: '无法判断', semantics: 'minimum-evidence' }
+  ]);
+  assert.equal(result.reports[0].conclusionSummary.unknown, 4);
+  assert.match(result.reports[0].markdown, /采集状态：unavailable；证据：未采集 Connector 配置事实/);
+});
+
+test('report rejects invalid host CPU capacity facts at the boundary', async () => {
+  await assert.rejects(
+    generateTomcatMarkdownReport({
+      selectedMiddleware: 'tomcat',
+      pastedLogCarrier: buildCarrier({}, { host: { hostname: 'demo-host', ip: '192.0.2.10', cpuCount: 0 } })
+    }),
+    (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'host.cpuCount'
+  );
+});
+
+test('report distinguishes Connector value sources and rule semantics', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({
+      connectors: [{
+        status: 'success',
+        evidence: 'server.xml Connector line 20; Executor shared-http line 8',
+        protocolHandler: 'org.apache.coyote.http11.Http11NioProtocol',
+        port: { value: 8080, source: 'explicit' },
+        executor: 'shared-http',
+        maxThreads: { value: 16, source: 'reference' },
+        acceptCount: { value: 100, source: 'version-default' },
+        connectionTimeout: { value: 0, source: 'explicit' }
+      }]
+    }, {
+      host: {
+        hostname: 'demo-host', ip: '192.0.2.10', cpuCount: 8,
+        resources: {
+          disk: { status: 'unavailable', source: 'df', unit: 'bytes' },
+          inode: { status: 'unavailable', source: 'df', unit: 'inodes' },
+          memory: { status: 'unavailable', source: '/proc/meminfo', unit: 'bytes' }
+        }, observations: []
+      }
+    })
+  });
+
+  assert.deepEqual(result.reports[0].connectorChecks.map(({ id, conclusion, semantics }) => ({ id, conclusion, semantics })), [
+    { id: 'tomcat.connector.connection-timeout', conclusion: '异常', semantics: 'correctness-baseline' },
+    { id: 'tomcat.thread-pool.host-capacity', conclusion: '警告', semantics: 'host-capacity-baseline' },
+    { id: 'tomcat.connector.accept-count', conclusion: '不适用', semantics: 'workload-tuning' }
+  ]);
+  const markdown = result.reports[0].markdown;
+  assert.match(markdown, /## Connector 与线程池域/);
+  assert.match(markdown, /端口：8080（显式值）/);
+  assert.match(markdown, /maxThreads：16（静态引用值）/);
+  assert.match(markdown, /acceptCount：100（Tomcat 版本默认值）/);
+  assert.match(markdown, /server\.xml Connector line 20; Executor shared-http line 8/);
+  assert.match(markdown, /先核查影响并通过客户变更流程调整/);
+});
+
+test('report leaves unresolvable Connector facts unknown without guessing defaults', async () => {
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ connectors: [{ status: 'restricted', evidence: 'server.xml permission denied' }] })
+  });
+
+  assert.deepEqual(result.reports[0].connectorChecks.map(({ conclusion }) => conclusion), ['无法判断']);
+  assert.match(result.reports[0].markdown, /采集状态：restricted/);
+  assert.match(result.reports[0].markdown, /server\.xml permission denied/);
+  assert.doesNotMatch(result.reports[0].markdown, /Tomcat 版本默认值/);
+});
+
+test('report rejects malformed Connector value-source facts at the boundary', async () => {
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ connectors: [{
+      status: 'success', evidence: 'server.xml', protocolHandler: 'HTTP/1.1',
+      port: { value: 8080, source: 'guessed-default' }, executor: '',
+      maxThreads: { value: 200, source: 'explicit' }, acceptCount: { value: 100, source: 'explicit' },
+      connectionTimeout: { value: 20000, source: 'explicit' }
+    }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].connectors[0].port');
 });
 
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {
