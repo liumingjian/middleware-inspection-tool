@@ -245,6 +245,30 @@ emit_deployments() {
   printf ']'
 }
 
+emit_log_targets() {
+  local entry id config_status config_source target_path metadata_status metadata_source file_type size_bytes modified_at first=true
+  printf '['
+  IFS=';' read -r -a entries <<< "${TOMCAT_INSPECTOR_LOG_TARGETS:-}"
+  for entry in "${entries[@]}"; do
+    [[ -z "$entry" ]] && continue
+    IFS='|' read -r id config_status config_source target_path metadata_status metadata_source file_type size_bytes modified_at <<< "$entry"
+    if [[ "$first" == false ]]; then printf ','; fi
+    printf '{"id":'; json_string "$id"
+    printf ',"configuration":{"status":'; json_string "$config_status"
+    printf ',"source":'; json_string "$config_source"
+    if [[ "$config_status" == success ]]; then printf ',"targetPath":'; json_string "$target_path"; fi
+    printf '},"fileMetadata":{"status":'; json_string "$metadata_status"
+    printf ',"source":'; json_string "$metadata_source"
+    if [[ "$metadata_status" == success ]]; then
+      printf ',"fileType":'; json_string "$file_type"
+      printf ',"sizeBytes":%s,"modifiedAt":' "$size_bytes"; json_string "$modified_at"
+    fi
+    printf '}}'
+    first=false
+  done
+  printf ']'
+}
+
 emit_instance() {
   local pid="$1" catalina_base="$2" tomcat_version="$3" java_version="$4" args_text="$5" http_port="$6"
   local instance_id="${host_ip}:${pid}"
@@ -271,6 +295,7 @@ emit_instance() {
   printf '} ,"connectors":'; emit_connectors
   printf ',"securityConfig":'; emit_security_config
   printf ',"deployments":'; emit_deployments
+  printf ',"logTargets":'; emit_log_targets
   printf ',"httpPort":%s,"checks":[' "$http_port"
   printf '{"id":"tomcat.instance.identity.present","observedValue":'; json_string "$instance_id"; printf ',"evidence":"TOMCAT_INSPECTOR_PID,TOMCAT_INSPECTOR_CATALINA_BASE"},'
   printf '{"id":"tomcat.version.support","observedValue":'; json_string "$tomcat_version"; printf ',"evidence":"TOMCAT_INSPECTOR_TOMCAT_VERSION"},'

@@ -551,6 +551,68 @@ test('report rejects malformed deployment facts at the boundary', async () => {
   }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].deployments[0]');
 });
 
+test('report validates and renders deterministic log configuration and file-status checks', async () => {
+  const logTargets = [
+    {
+      id: 'catalina-file',
+      configuration: { status: 'success', source: 'logging.properties:1', targetPath: '/var/log/tomcat/catalina.log' },
+      fileMetadata: { status: 'success', source: 'stat:/var/log/tomcat/catalina.log', fileType: 'regular-file', sizeBytes: 1048576, modifiedAt: '2026-07-21T00:00:00Z' }
+    },
+    {
+      id: 'access-log',
+      configuration: { status: 'restricted', source: 'server.xml:Host' },
+      fileMetadata: { status: 'unavailable', source: 'stat:/secure/access.log' }
+    }
+  ];
+  const result = await generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets })
+  });
+
+  assert.deepEqual(result.reports[0].logChecks.map(({ id, conclusion }) => ({ id, conclusion })), [
+    { id: 'tomcat.logging.catalina-file.configuration', conclusion: '正常' },
+    { id: 'tomcat.logging.catalina-file.file-status', conclusion: '正常' },
+    { id: 'tomcat.logging.access-log.configuration', conclusion: '无法判断' },
+    { id: 'tomcat.logging.access-log.file-status', conclusion: '无法判断' }
+  ]);
+  const markdown = result.reports[0].markdown;
+  assert.match(markdown, /## 日志配置与文件状态域/);
+  assert.match(markdown, /tomcat\.logging\.catalina-file\.configuration \| 正常 \| 采集状态：success；来源：logging\.properties:1；目标路径：\/var\/log\/tomcat\/catalina\.log/);
+  assert.match(markdown, /tomcat\.logging\.catalina-file\.file-status \| 正常 \| 采集状态：success；来源：stat:\/var\/log\/tomcat\/catalina\.log；类型：regular-file；大小：1048576 bytes；修改时间：2026-07-21T00:00:00Z/);
+  assert.match(markdown, /tomcat\.logging\.access-log\.configuration \| 无法判断 \| 采集状态：restricted；来源：server\.xml:Host/);
+  assert.match(markdown, /仅检查静态日志配置、输出目标路径和文件元数据，不读取或分析日志正文/);
+  assert.doesNotMatch(markdown, /日志正文片段|错误数量：|异常模式：|根因结论：/);
+});
+
+test('report rejects unbounded or guessed log target facts at the boundary', async () => {
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets: [{
+      id: 'catalina-file',
+      configuration: { status: 'success', source: 'logging.properties', targetPath: '/var/log/tomcat/catalina.log', content: 'full configuration' },
+      fileMetadata: { status: 'success', source: 'stat', fileType: 'regular-file', sizeBytes: 10, modifiedAt: 'now' }
+    }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[0].configuration');
+});
+
+test('report rejects duplicate or non-stable log target identifiers at the boundary', async () => {
+  const logTarget = {
+    id: 'catalina-file',
+    configuration: { status: 'success', source: 'logging.properties:1', targetPath: '/var/log/tomcat/catalina.log' },
+    fileMetadata: { status: 'success', source: 'stat:/var/log/tomcat/catalina.log', fileType: 'regular-file', sizeBytes: 10, modifiedAt: '2026-07-21T00:00:00Z' }
+  };
+
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets: [logTarget, { ...logTarget }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[1].id');
+
+  await assert.rejects(generateTomcatMarkdownReport({
+    selectedMiddleware: 'tomcat',
+    pastedLogCarrier: buildCarrier({ logTargets: [{ ...logTarget, id: 'catalina-file | injected row' }] })
+  }), (error) => error.code === 'DOCUMENT_SCHEMA_INVALID' && error.path === 'instances[0].logTargets[0]');
+});
+
 test('report generation rejects untrusted carriers with structured, non-sensitive errors', async () => {
   await assert.rejects(
     generateTomcatMarkdownReport({ pastedLogCarrier: sampleLog }),
